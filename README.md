@@ -511,6 +511,24 @@ Parts default to `watertight: true`. Open surfaces can explicitly set:
 
 so intentional boundaries are not treated as print-topology failures while true non-manifold defects are still reported.
 
+## V0.5.1 — Screenless Low-Token Mode
+
+For Codex/Desktop workflows, Blender should be treated as a headless engineering target during iteration.
+
+- Do not inspect the Blender UI after every operation.
+- Use `model(do="engineer")` for build + validation.
+- Use `inspect(kind="fit_batch")` to compare many parts numerically in one MCP call.
+- Patch only `failed_ids`.
+- The compact server allows **one visual preview by default**.
+- A second preview requires an intentional `force=true`.
+- `AGENTS.md` contains the recommended Codex behavior so visual UI loops do not consume unnecessary tokens.
+
+The preferred loop is:
+
+`reference once → blueprint cache → engineer → fit_batch → patch failed parts → final preview once`
+
+This keeps image/context usage near the end of the task instead of paying visual-token cost during every modeling edit.
+
 ## Install
 
 Requires Blender 4.2+ and Python 3.10+.
