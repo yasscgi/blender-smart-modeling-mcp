@@ -143,9 +143,11 @@ def _engineer_run(item: dict) -> dict:
         dim_error = float(quality.get("max_dimension_error_pct", 999.0))
         boundary = int(topo.get("boundary_e", 999999)) if topo.get("ok") else 999999
         nonman = int(topo.get("nonmanifold", 999999)) if topo.get("ok") else 999999
+        watertight = bool(spec_part.get("watertight", True))
+        hard_nonmanifold = max(0, nonman - boundary) if not watertight else nonman
 
         fit_ok = fit_value is None or fit_value >= target_fit
-        topo_ok = boundary == 0 and nonman == 0
+        topo_ok = (boundary == 0 if watertight else True) and hard_nonmanifold == 0
         dim_ok = dim_error <= max_dim_error
         ok = fit_ok and topo_ok and dim_ok
         if ok:
@@ -158,6 +160,7 @@ def _engineer_run(item: dict) -> dict:
             "dim_err_pct": round(dim_error, 3),
             "boundary": boundary,
             "nonmanifold": nonman,
+            "watertight": watertight,
         }
         if fit_value is not None:
             entry["fit"] = round(fit_value, 4)
