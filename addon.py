@@ -1176,7 +1176,94 @@ def validate(p):
     return out
 
 
+def smart_batch(p):
+    steps = p.get("steps", [])
+    if not isinstance(steps, list) or not steps:
+        return result(False, error="smart_batch requires a non-empty steps list")
+
+    use_checkpoint = bool(p.get("checkpoint", True))
+    rollback = bool(p.get("rollback_on_error", True))
+    return_steps = bool(p.get("return_steps", False))
+    if use_checkpoint:
+        bpy.ops.ed.undo_push(message="Smart MCP transaction")
+
+    summaries = []
+    for i, step in enumerate(steps):
+        kind = step.get("do")
+        payload = {k: v for k, v in step.items() if k != "do"}
+        try:
+            if kind == "create":
+                out = op_create(payload)
+            elif kind == "object":
+                payload["checkpoint"] = False
+                out = do_batch(payload)
+            elif kind == "mesh":
+                payload["checkpoint"] = False
+                out = mesh_edit_batch(payload)
+            elif kind == "topology":
+                payload["checkpoint"] = False
+                out = topology_batch(payload)
+            elif kind == "lathe":
+                out = op_lathe(payload)
+            elif kind == "loft":
+                out = op_loft(payload)
+            elif kind == "sweep":
+                out = op_sweep(payload)
+            elif kind == "curve":
+                out = op_curve(payload)
+            elif kind == "radial":
+                out = op_radial_array(payload)
+            elif kind == "validate":
+                out = validate(payload)
+            else:
+                raise ValueError("Unknown smart_batch step: " + str(kind))
+
+            if not out.get("ok", False):
+                raise RuntimeError(out.get("error", "step failed"))
+
+            if return_steps:
+                summary = {"i": i, "do": kind, "ok": True}
+                if "object" in out:
+                    summary["object"] = out["object"]
+                if "ops" in out:
+                    summary["ops"] = out["ops"]
+                if kind == "validate":
+                    for key in ("v", "e", "f", "boundary", "nonmanifold", "loose"):
+                        if key in out:
+                            summary[key] = out[key]
+                summaries.append(summary)
+
+        except Exception as exc:
+            rolled_back = False
+            if rollback and use_checkpoint:
+                try:
+                    bpy.ops.ed.undo()
+                    rolled_back = True
+                except Exception:
+                    rolled_back = False
+            return result(
+                False,
+                error=str(exc),
+                failed_step=i,
+                failed_do=kind,
+                rolled_back=rolled_back,
+                scene_h=scene_digest(),
+            )
+
+    final_obj = bpy.context.active_object
+    out = result(
+        steps=len(steps),
+        scene_h=scene_digest(),
+        active=compact_obj(final_obj) if final_obj else None,
+    )
+    if return_steps:
+        out["results"] = summaries
+    return out
+
+
 def dispatch(a, p):
+    if a == "smart_batch":
+        return smart_batch(p)
     if a == "scene_state":
         h = scene_digest()
         if p.get("changed_since") and p["changed_since"] == h:
