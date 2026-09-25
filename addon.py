@@ -1275,6 +1275,30 @@ def _apply_engineering_features(base, features, collection, cleanup=True):
     return applied
 
 
+def _engineering_quality(obj, target_dims):
+    actual = [float(v) for v in obj.dimensions]
+    target = [float(v) for v in target_dims]
+    errors = [
+        round(abs(a - t) / t * 100.0, 3) if t > 1e-9 else 0.0
+        for a, t in zip(actual, target)
+    ]
+
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    boundary = sum(1 for e in bm.edges if e.is_boundary)
+    nonmanifold = sum(1 for e in bm.edges if not e.is_manifold)
+    bm.free()
+
+    return {
+        "actual_mm": [round(v, 3) for v in actual],
+        "target_mm": [round(v, 3) for v in target],
+        "dimension_error_pct": errors,
+        "max_dimension_error_pct": round(max(errors), 3),
+        "boundary_edges": boundary,
+        "nonmanifold_edges": nonmanifold,
+    }
+
+
 def reconstruct_blueprint(p):
     spec = p.get("spec", {})
     parts = spec.get("parts", [])
@@ -1360,11 +1384,13 @@ def reconstruct_blueprint(p):
             for poly in base.data.polygons:
                 poly.use_smooth = True
 
+        quality = _engineering_quality(base, [w, d, h])
         built.append({
             "id": pid,
             "name": base.name,
             "views": [v[0] for v in usable],
             "features": feature_names,
+            "quality": quality,
             "object": compact_obj(base),
         })
 
