@@ -23,7 +23,7 @@ def _recv(s: socket.socket, n: int) -> bytes:
 
 def call(action: str, **params: Any) -> dict:
     payload = json.dumps({"action": action, "params": params}, separators=(",", ":")).encode()
-    with socket.create_connection((HOST, PORT), timeout=30) as s:
+    with socket.create_connection((HOST, PORT), timeout=300) as s:
         s.sendall(len(payload).to_bytes(4, "big") + payload)
         n = int.from_bytes(_recv(s, 4), "big")
         return json.loads(_recv(s, n))
