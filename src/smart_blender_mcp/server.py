@@ -301,6 +301,19 @@ def checkpoint(label: str = "") -> dict:
 
 
 @mcp.tool()
+def engineering_contact_sheet(
+    size: int = 384,
+    part_ids: list[str] | None = None,
+) -> dict:
+    """Render six orthographic engineering views into one contact-sheet image."""
+    return call(
+        "engineering_contact_sheet",
+        size=max(128, min(size, 1024)),
+        part_ids=part_ids or [],
+    )
+
+
+@mcp.tool()
 def viewport_snapshot(width: int = 512, height: int = 512) -> dict:
     """Render a preview only when visual verification is needed."""
     return call("viewport_snapshot", width=width, height=height)
