@@ -55,7 +55,42 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
             report["blueprint_id"] = bid
             report["cached"] = True
         return report
-    raise ValueError("kind must be topology, faces, edges, or blueprint")
+
+    if kind == "blueprint_patch":
+        if not isinstance(selector, dict):
+            raise ValueError("selector must contain blueprint_id, part_id and changes")
+        bid = str(selector.get("blueprint_id", ""))
+        base = _BLUEPRINT_CACHE.get(bid)
+        if base is None:
+            raise ValueError("Unknown blueprint_id")
+        part_id = str(selector.get("part_id", ""))
+        changes = selector.get("changes", {})
+        if not part_id or not isinstance(changes, dict):
+            raise ValueError("blueprint_patch requires part_id and object changes")
+
+        patched = json.loads(json.dumps(base))
+        target = next((p for p in patched.get("parts", []) if str(p.get("id")) == part_id), None)
+        if target is None:
+            raise ValueError("Part not found in cached blueprint: " + part_id)
+
+        for key, value in changes.items():
+            if key in {"dimensions_mm", "views"} and isinstance(value, dict):
+                current = target.setdefault(key, {})
+                current.update(value)
+            else:
+                target[key] = value
+
+        report = validate_blueprint_spec(patched)
+        if report.get("ok"):
+            new_id = blueprint_digest(patched)
+            _BLUEPRINT_CACHE[new_id] = patched
+            report["blueprint_id"] = new_id
+            report["previous_blueprint_id"] = bid
+            report["patched_part"] = part_id
+            report["cached"] = True
+        return report
+
+    raise ValueError("kind must be topology, faces, edges, blueprint, or blueprint_patch")
 
 
 @mcp.tool()
