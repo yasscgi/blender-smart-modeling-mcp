@@ -422,6 +422,95 @@ Linear patterns use `step_mm`.
 
 `preview(mode="engineering")` renders Front/Back/Left/Right/Top/Bottom into a single contact sheet. Use it only after numeric dimension/topology/fit checks need visual confirmation.
 
+## V0.5 — AI Engineer Planner
+
+V0.5 turns the compact MCP from a modeling toolkit into an engineering orchestrator while keeping the same four external tools.
+
+### Internal engineer mode
+
+Cache the Blueprint Manifest once:
+
+```text
+inspect(kind="blueprint", selector=<manifest>) → blueprint_id
+```
+
+Optionally inspect the deterministic plan:
+
+```text
+inspect(kind="plan", selector={"blueprint_id":"<id>"})
+```
+
+Then run the complete engineering pass with one MCP call:
+
+```json
+{
+  "steps": [
+    {
+      "do": "engineer",
+      "blueprint_id": "<id>",
+      "target_fit": 0.90,
+      "max_dimension_error_pct": 3.0,
+      "auto_repair": true,
+      "fit_resolution": 64
+    }
+  ]
+}
+```
+
+Internally this performs:
+
+`plan → choose strategy → reconstruct → topology check → safe repair → silhouette fit → dimension check → compact report`
+
+The AI receives only the engineering results that matter for the next decision.
+
+### Strategy planner
+
+The planner selects the cheapest strong method from the structured evidence:
+
+- path + profile → `sweep`
+- cross-sections → `loft`
+- rotational profile → `lathe`
+- two or three canonical views → `orthographic_hull`
+
+Explicit strategies always take priority.
+
+### Runtime efficiency metrics
+
+Every Blender socket round trip is measured internally. The engineer response includes:
+
+- MCP calls
+- transmitted bytes
+- received bytes
+- Blender round-trip time
+
+Use:
+
+```text
+inspect(kind="metrics")
+```
+
+to read cumulative session metrics.
+
+### Repeatable payload benchmark
+
+A CLI benchmark is included:
+
+```bash
+blender-smart-benchmark examples/engineering_blueprint.json
+```
+
+It measures manifest size, cached-ID size, planner complexity, build order, and estimated repeated-context savings. Actual geometry quality and runtime are measured by `do:"engineer"` against Blender.
+
+### 3D-print intent
+
+Parts default to `watertight: true`. Open surfaces can explicitly set:
+
+```json
+{"watertight": false}
+```
+
+so intentional boundaries are not treated as print-topology failures while true non-manifold defects are still reported.
+
 ## Install
 
 Requires Blender 4.2+ and Python 3.10+.
@@ -465,4 +554,4 @@ uvx --from . blender-smart-mcp
 
 ## Next layer
 
-The next engineering layer will focus on automated silhouette comparison, local error heatmaps, constraint-driven refinement, sockets/pegs from assembly links, and reference-driven detail passes without expanding the compact MCP surface.
+V0.6 will focus on local silhouette error heatmaps, constraint-driven geometric correction, automatic connector placement from assembly geometry, and learned strategy tuning from benchmark results — still without expanding the four-tool compact MCP surface.
