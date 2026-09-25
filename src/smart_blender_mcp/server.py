@@ -111,6 +111,91 @@ def mesh_edit_batch(name: str, ops: list[dict], checkpoint: bool = True) -> dict
 
 
 @mcp.tool()
+def edge_query(
+    name: str = "",
+    selector: dict | None = None,
+    include_ids: bool = False,
+    max_ids: int = 64,
+) -> dict:
+    """Inspect a compact semantic edge region.
+
+    Edge selectors can use:
+      {"boundary":true}
+      {"bbox":{"x":[0,1],"y":[0,1],"z":[0.8,1]}}
+      {"orientation":{"axis":"Z","min_dot":0.8}}
+      {"edge_ids":[1,2,3]}
+      {"all":[...]} or {"any":[...]}
+
+    IDs are omitted by default to keep responses small."""
+    return call(
+        "edge_query",
+        name=name,
+        selector=selector or {},
+        include_ids=include_ids,
+        max_ids=max_ids,
+    )
+
+
+@mcp.tool()
+def topology_batch(name: str, ops: list[dict], checkpoint: bool = True) -> dict:
+    """Advanced direct-topology edits with local semantic edge selection.
+
+    Supported ops:
+      bevel_edges {selector,width,segments,profile?}
+      subdivide_edges {selector,cuts,smooth?}
+      loop_cut {axis:"X|Y|Z",position:0..1}
+      bridge_boundaries {first:{...},second:{...},twist?}
+      collapse_edges {selector}
+      dissolve_edges {selector,use_verts?}
+
+    Prefer batching related topology changes into one call."""
+    return call("topology_batch", name=name, ops=ops, checkpoint=checkpoint)
+
+
+@mcp.tool()
+def sweep_profile(
+    name: str,
+    path: list[list[float]],
+    profile: list[list[float]],
+    closed_path: bool = False,
+    cap: bool = True,
+    up: list[float] | None = None,
+) -> dict:
+    """Sweep a sparse 2D profile along a 3D path.
+    Useful for trims, rails, frames, handles and complex hard-surface details."""
+    return call(
+        "sweep_profile",
+        name=name,
+        path=path,
+        profile=profile,
+        closed_path=closed_path,
+        cap=cap,
+        up=up or [0, 0, 1],
+    )
+
+
+@mcp.tool()
+def radial_array(
+    name: str,
+    count: int,
+    axis: str = "Z",
+    angle_degrees: float = 360.0,
+    center: list[float] | None = None,
+    linked: bool = True,
+) -> dict:
+    """Create repeated radial detail from one object in a single compact call."""
+    return call(
+        "radial_array",
+        name=name,
+        count=count,
+        axis=axis,
+        angle_degrees=angle_degrees,
+        center=center or [0, 0, 0],
+        linked=linked,
+    )
+
+
+@mcp.tool()
 def lathe_profile(
     name: str,
     points: list[list[float]],
