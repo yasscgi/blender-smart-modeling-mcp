@@ -123,6 +123,14 @@ def lathe_profile(
 
 
 @mcp.tool()
+def loft_sections(name: str, sections: list[dict], cap: bool = True) -> dict:
+    """Build a complex non-rotational body from sparse 2D cross-sections.
+    Each section: {"z": number, "points": [[x,y], ...]}.
+    All sections must use the same point count/order."""
+    return call("loft_sections", name=name, sections=sections, cap=cap)
+
+
+@mcp.tool()
 def curve_tube(
     name: str,
     points: list[list[float]],
