@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Smart Modeling MCP",
     "author": "Yasscgi",
-    "version": (0, 4, 0),
+    "version": (0, 4, 1),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Smart MCP",
     "category": "3D View",
@@ -21,6 +21,9 @@ HOST, PORT = "127.0.0.1", 9877
 _requests = queue.Queue()
 _running = False
 _server = None
+_last_error = ""
+_self_test_status = "Not run"
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
 
 def result(ok=True, **kw):
@@ -31,6 +34,12 @@ def active(name=""):
     o = bpy.data.objects.get(name) if name else bpy.context.active_object
     if not o:
         raise ValueError("Object not found")
+    current = bpy.context.object
+    if current is not None and getattr(current, "mode", "OBJECT") != "OBJECT":
+        try:
+            bpy.ops.object.mode_set(mode="OBJECT")
+        except Exception:
+            pass
     bpy.ops.object.select_all(action="DESELECT")
     o.select_set(True)
     bpy.context.view_layer.objects.active = o
@@ -1487,7 +1496,8 @@ def reconstruct_blueprint(p):
     warnings = []
     objects_by_id = {}
 
-    bpy.ops.ed.undo_push(message="Blueprint 2D to 3D reconstruction")
+    if p.get("checkpoint", True):
+        bpy.ops.ed.undo_push(message="Blueprint 2D to 3D reconstruction")
 
     for idx, part in enumerate(parts):
         pid = str(part.get("id") or f"P{idx+1:02d}")
@@ -1807,7 +1817,7 @@ def engineering_contact_sheet(p):
             alpha=True,
             float_buffer=False,
         )
-        sheet.pixels.foreach_set(sheet_pixels)
+        sheet.pixels[:] = sheet_pixels
         sheet.update()
         path = bpy.path.abspath("//smart_engineering_sheet.png")
         sheet.filepath_raw = path
@@ -2011,6 +2021,57 @@ def silhouette_fit(p):
     )
 
 
+def viewport_snapshot(p):
+    scene = bpy.context.scene
+    width = max(64, min(int(p.get("width", 512)), 4096))
+    height = max(64, min(int(p.get("height", 512)), 4096))
+
+    old_camera = scene.camera
+    old_x = scene.render.resolution_x
+    old_y = scene.render.resolution_y
+    old_pct = scene.render.resolution_percentage
+    old_filepath = scene.render.filepath
+
+    temp_camera = None
+    try:
+        if scene.camera is None:
+            meshes = [o for o in scene.objects if o.type == "MESH" and not o.hide_render]
+            if not meshes:
+                raise ValueError("Preview requires a camera or at least one visible mesh")
+            lo, hi = _world_bounds(meshes)
+            center = (lo + hi) * 0.5
+            dims = hi - lo
+            dist = max(float(dims.x), float(dims.y), float(dims.z), 1.0) * 2.5
+            cam_data = bpy.data.cameras.new("__SMART_PREVIEW_CAMERA_DATA__")
+            temp_camera = bpy.data.objects.new("__SMART_PREVIEW_CAMERA__", cam_data)
+            scene.collection.objects.link(temp_camera)
+            temp_camera.location = center + Vector((dist, -dist, dist * 0.75))
+            direction = center - temp_camera.location
+            temp_camera.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+            cam_data.type = "ORTHO"
+            cam_data.ortho_scale = max(float(dims.x), float(dims.y), float(dims.z), 1.0) * 1.4
+            scene.camera = temp_camera
+
+        path = bpy.path.abspath("//smart_mcp_preview.png")
+        scene.render.filepath = path
+        scene.render.resolution_x = width
+        scene.render.resolution_y = height
+        scene.render.resolution_percentage = 100
+        bpy.ops.render.render(write_still=True)
+        return result(path=path, w=width, h=height, scene_h=scene_digest())
+    finally:
+        scene.camera = old_camera
+        scene.render.resolution_x = old_x
+        scene.render.resolution_y = old_y
+        scene.render.resolution_percentage = old_pct
+        scene.render.filepath = old_filepath
+        if temp_camera is not None:
+            cam_data = temp_camera.data
+            bpy.data.objects.remove(temp_camera, do_unlink=True)
+            if cam_data and cam_data.users == 0:
+                bpy.data.cameras.remove(cam_data)
+
+
 def validate(p):
     o = active(p.get("name", ""))
     if o.type != "MESH":
@@ -2082,6 +2143,7 @@ def smart_batch(p):
             elif kind == "radial":
                 out = op_radial_array(payload)
             elif kind == "orthographic":
+                payload["checkpoint"] = False
                 out = reconstruct_blueprint(payload)
             elif kind == "cameras":
                 out = setup_engineering_cameras(payload)
@@ -2186,12 +2248,7 @@ def dispatch(a, p):
         bpy.ops.ed.undo_push(message=p.get("label") or "Smart MCP")
         return result(checkpoint=True, scene_h=scene_digest())
     if a == "viewport_snapshot":
-        path = bpy.path.abspath("//smart_mcp_preview.png")
-        bpy.context.scene.render.filepath = path
-        bpy.context.scene.render.resolution_x = p["width"]
-        bpy.context.scene.render.resolution_y = p["height"]
-        bpy.ops.render.render(write_still=True)
-        return result(path=path, w=p["width"], h=p["height"], scene_h=scene_digest())
+        return viewport_snapshot(p)
     raise ValueError("Unknown action")
 
 
@@ -2222,6 +2279,8 @@ def recv_exact(c, n):
 def client(c):
     try:
         n = int.from_bytes(recv_exact(c, 4), "big")
+        if n <= 0 or n > MAX_MESSAGE_BYTES:
+            raise ValueError("Invalid MCP message size")
         req = json.loads(recv_exact(c, n))
         evt = threading.Event()
         box = {}
@@ -2237,41 +2296,117 @@ def client(c):
 
 
 def loop():
-    global _server
-    s = socket.socket()
-    _server = s
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind((HOST, PORT))
-    s.listen(8)
-    s.settimeout(1)
+    global _running, _server, _last_error
+    s = _server
+    if s is None:
+        return
     while _running:
         try:
             c, _ = s.accept()
             threading.Thread(target=client, args=(c,), daemon=True).start()
         except socket.timeout:
             pass
-        except OSError:
+        except OSError as exc:
+            if _running:
+                _last_error = str(exc)
             break
+    _running = False
 
 
 def start():
-    global _running
+    global _running, _server, _last_error
     if _running:
-        return
+        return True
+    s = socket.socket()
+    try:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((HOST, PORT))
+        s.listen(8)
+        s.settimeout(1)
+    except OSError as exc:
+        _last_error = str(exc)
+        try:
+            s.close()
+        except Exception:
+            pass
+        _server = None
+        _running = False
+        return False
+
+    _server = s
+    _last_error = ""
     _running = True
     threading.Thread(target=loop, daemon=True).start()
     if not bpy.app.timers.is_registered(pump):
         bpy.app.timers.register(pump)
+    return True
 
 
 def stop():
-    global _running
+    global _running, _server
     _running = False
     if _server:
         try:
             _server.close()
         except Exception:
             pass
+    _server = None
+
+
+def run_self_test():
+    global _self_test_status
+    created = []
+    try:
+        if bpy.context.object is not None and getattr(bpy.context.object, "mode", "OBJECT") != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                pass
+
+        bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0, 0, 0))
+        cube = bpy.context.object
+        cube.name = "__SMART_TEST_CUBE__"
+        created.append(cube)
+
+        bpy.ops.mesh.primitive_cylinder_add(vertices=24, radius=0.45, depth=3.0, location=(0, 0, 0))
+        cutter = bpy.context.object
+        cutter.name = "__SMART_TEST_CUTTER__"
+        created.append(cutter)
+
+        active(cube.name)
+        mod = cube.modifiers.new("__SMART_TEST_BOOLEAN__", "BOOLEAN")
+        mod.operation = "DIFFERENCE"
+        mod.solver = "EXACT"
+        mod.object = cutter
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+
+        bm = bmesh.new()
+        bm.from_mesh(cube.data)
+        faces = len(bm.faces)
+        verts = len(bm.verts)
+        bm.free()
+        if faces <= 0 or verts <= 0:
+            raise RuntimeError("Boolean self-test produced empty geometry")
+
+        _self_test_status = "PASS - Boolean/mesh OK"
+        return True, _self_test_status
+    except Exception as exc:
+        _self_test_status = "FAIL - " + str(exc)
+        return False, _self_test_status
+    finally:
+        for obj in created:
+            if obj and obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+
+
+class SMARTMCP_OT_self_test(bpy.types.Operator):
+    bl_idname = "smartmcp.self_test"
+    bl_label = "Run Self Test"
+
+    def execute(self, ctx):
+        ok, message = run_self_test()
+        self.report({"INFO"} if ok else {"ERROR"}, message)
+        return {"FINISHED"}
 
 
 class SMARTMCP_OT_toggle(bpy.types.Operator):
@@ -2279,7 +2414,15 @@ class SMARTMCP_OT_toggle(bpy.types.Operator):
     bl_label = "Start / Stop"
 
     def execute(self, ctx):
-        stop() if _running else start()
+        if _running:
+            stop()
+            self.report({"INFO"}, "Smart MCP stopped")
+        else:
+            ok = start()
+            if ok:
+                self.report({"INFO"}, "Smart MCP listening on 127.0.0.1:9877")
+            else:
+                self.report({"ERROR"}, _last_error or "Failed to start Smart MCP")
         return {"FINISHED"}
 
 
@@ -2291,12 +2434,16 @@ class SMARTMCP_PT_panel(bpy.types.Panel):
     bl_category = "Smart MCP"
 
     def draw(self, ctx):
-        self.layout.label(text=("Running :9877" if _running else "Stopped"))
-        self.layout.label(text="2D Plan Engineer V0.4")
+        self.layout.label(text=("Running 127.0.0.1:9877" if _running else "Stopped"))
+        self.layout.label(text="2D Plan Engineer V0.4.1")
+        if _last_error:
+            self.layout.label(text=_last_error[:80], icon="ERROR")
         self.layout.operator("smartmcp.toggle")
+        self.layout.operator("smartmcp.self_test")
+        self.layout.label(text=_self_test_status[:80])
 
 
-classes = (SMARTMCP_OT_toggle, SMARTMCP_PT_panel)
+classes = (SMARTMCP_OT_self_test, SMARTMCP_OT_toggle, SMARTMCP_PT_panel)
 
 
 def register():
