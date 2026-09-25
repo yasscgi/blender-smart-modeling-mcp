@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.blend1
+smart_mcp_preview.png
