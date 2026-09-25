@@ -56,6 +56,25 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
             report["cached"] = True
         return report
 
+    if kind == "fit":
+        if not isinstance(selector, dict):
+            raise ValueError("fit selector requires blueprint_id")
+        bid = str(selector.get("blueprint_id", ""))
+        spec = _BLUEPRINT_CACHE.get(bid)
+        if spec is None:
+            raise ValueError("Unknown blueprint_id")
+        part_id = str(selector.get("part_id") or name)
+        part = next((p for p in spec.get("parts", []) if str(p.get("id")) == part_id), None)
+        if part is None:
+            raise ValueError("Part not found in cached blueprint: " + part_id)
+        return _call(
+            "silhouette_fit",
+            part=part,
+            coordinate_mode=spec.get("coordinate_mode", "normalized"),
+            part_id=part_id,
+            resolution=max(24, min(int(selector.get("resolution", 64)), 160)),
+        )
+
     if kind == "blueprint_patch":
         if not isinstance(selector, dict):
             raise ValueError("selector must contain blueprint_id, part_id and changes")
@@ -90,7 +109,7 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
             report["cached"] = True
         return report
 
-    raise ValueError("kind must be topology, faces, edges, blueprint, or blueprint_patch")
+    raise ValueError("kind must be topology, faces, edges, fit, blueprint, or blueprint_patch")
 
 
 @mcp.tool()
