@@ -155,9 +155,46 @@ def validate_blueprint_spec(spec: dict) -> dict:
             if conflicts:
                 warnings.append(f"{pid}: orthographic spans conflict with stated dimensions")
 
-        confidence = float(part.get("confidence", 1.0))
+        confidence = max(0.0, min(1.0, float(part.get("confidence", 1.0))))
         if confidence < 0.6:
             warnings.append(f"{pid}: low dimensional/reference confidence ({confidence:.2f})")
+
+        features = part.get("features", [])
+        if not isinstance(features, list):
+            errors.append(f"{pid}: features must be a list")
+            features = []
+        valid_features = 0
+        for fi, feature in enumerate(features):
+            if not isinstance(feature, dict):
+                errors.append(f"{pid}: features[{fi}] must be an object")
+                continue
+            ftype = feature.get("type")
+            if ftype in {"hole_cylinder", "boss_cylinder"}:
+                if float(feature.get("diameter_mm", 0)) <= 0 or float(feature.get("depth_mm", 0)) <= 0:
+                    errors.append(f"{pid}: {ftype} requires positive diameter_mm and depth_mm")
+                    continue
+                if str(feature.get("axis", "Z")).upper() not in {"X", "Y", "Z"}:
+                    errors.append(f"{pid}: {ftype} axis must be X/Y/Z")
+                    continue
+                valid_features += 1
+            elif ftype in {"cut_box", "boss_box"}:
+                fdims = feature.get("dimensions_mm", [])
+                if (
+                    not isinstance(fdims, list)
+                    or len(fdims) != 3
+                    or any(float(v) <= 0 for v in fdims)
+                ):
+                    errors.append(f"{pid}: {ftype} requires 3 positive dimensions_mm")
+                    continue
+                valid_features += 1
+            else:
+                warnings.append(f"{pid}: unsupported feature type {ftype!r}")
+
+        view_score = {0: 0.0, 1: 0.45, 2: 0.82, 3: 1.0}[min(3, len(available))]
+        conflict_penalty = min(0.35, 0.08 * len(conflicts))
+        reconstructability = max(0.0, min(1.0, view_score * confidence - conflict_penalty))
+        if reconstructability < 0.65:
+            warnings.append(f"{pid}: reconstructability is low ({reconstructability:.2f}); add another orthographic view or dimensions")
 
         parts_out.append({
             "id": pid,
@@ -166,6 +203,8 @@ def validate_blueprint_spec(spec: dict) -> dict:
             "dimensions_mm": [round(width, 3), round(depth, 3), round(height, 3)],
             "conflicts": conflicts,
             "confidence": round(confidence, 3),
+            "features": valid_features,
+            "reconstructability": round(reconstructability, 3),
         })
 
     return {
@@ -174,6 +213,10 @@ def validate_blueprint_spec(spec: dict) -> dict:
         "warnings": warnings,
         "parts": parts_out,
         "part_count": len(parts_out),
+        "engineering_ready": (not errors) and all(p["reconstructability"] >= 0.65 for p in parts_out),
+        "avg_reconstructability": round(
+            sum(p["reconstructability"] for p in parts_out) / len(parts_out), 3
+        ) if parts_out else 0.0,
         "blueprint_h": blueprint_digest(spec),
     }
 
