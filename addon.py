@@ -1272,9 +1272,61 @@ def _engineering_feature_object(feature, collection, index):
     return obj
 
 
+def _expand_engineering_features(features):
+    expanded = []
+    for feature in features or []:
+        pattern = feature.get("pattern")
+        if not isinstance(pattern, dict):
+            item = dict(feature)
+            item.pop("pattern", None)
+            expanded.append(item)
+            continue
+
+        ptype = str(pattern.get("type", ""))
+        count = max(1, min(int(pattern.get("count", 1)), 256))
+        base = dict(feature)
+        base.pop("pattern", None)
+        base_center = Vector(base.get("center_mm", [0, 0, 0]))
+
+        if ptype == "linear":
+            step = Vector(pattern.get("step_mm", [0, 0, 0]))
+            for i in range(count):
+                item = dict(base)
+                item["center_mm"] = list(base_center + step * i)
+                expanded.append(item)
+
+        elif ptype == "radial":
+            axis_name = str(pattern.get("axis", "Z")).upper()
+            axis = {
+                "X": Vector((1, 0, 0)),
+                "Y": Vector((0, 1, 0)),
+                "Z": Vector((0, 0, 1)),
+            }.get(axis_name)
+            if axis is None:
+                raise ValueError("Radial pattern axis must be X/Y/Z")
+            origin = Vector(pattern.get("center_mm", [0, 0, 0]))
+            total = math.radians(float(pattern.get("angle_degrees", 360.0)))
+            for i in range(count):
+                angle = total * i / count
+                rot = Matrix.Rotation(angle, 4, axis)
+                item = dict(base)
+                item["center_mm"] = list(origin + rot @ (base_center - origin))
+                if "rotation_deg" in item:
+                    rr = list(item.get("rotation_deg", [0, 0, 0]))
+                    axis_i = {"X": 0, "Y": 1, "Z": 2}[axis_name]
+                    rr[axis_i] = float(rr[axis_i]) + math.degrees(angle)
+                    item["rotation_deg"] = rr
+                expanded.append(item)
+
+        else:
+            raise ValueError("Unsupported feature pattern: " + ptype)
+
+    return expanded
+
+
 def _apply_engineering_features(base, features, collection, cleanup=True):
     applied = []
-    for i, feature in enumerate(features or []):
+    for i, feature in enumerate(_expand_engineering_features(features)):
         ftype = feature.get("type", "")
         tool = _engineering_feature_object(feature, collection, i)
         operation = "DIFFERENCE" if ftype in {"hole_cylinder", "cut_box"} else "UNION"
