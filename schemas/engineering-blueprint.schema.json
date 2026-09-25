@@ -347,6 +347,10 @@
           "items": {
             "$ref": "#/$defs/feature"
           }
+        },
+        "watertight": {
+          "type": "boolean",
+          "default": true
         }
       },
       "additionalProperties": true
