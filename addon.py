@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Smart Modeling MCP",
     "author": "Yasscgi",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Smart MCP",
     "category": "3D View",
@@ -15,7 +15,7 @@ import math
 import queue
 import socket
 import threading
-from mathutils import Vector
+from mathutils import Vector, Matrix
 
 HOST, PORT = "127.0.0.1", 9877
 _requests = queue.Queue()
@@ -418,6 +418,407 @@ def _inset(bm, faces, op):
     return len(res.get("faces", []))
 
 
+def _edge_matches(edge, selector, lo, hi):
+    if not selector:
+        return True
+
+    if "all" in selector:
+        return all(_edge_matches(edge, s, lo, hi) for s in selector["all"])
+    if "any" in selector:
+        return any(_edge_matches(edge, s, lo, hi) for s in selector["any"])
+
+    if "edge_ids" in selector and edge.index not in set(selector["edge_ids"]):
+        return False
+
+    if "boundary" in selector and bool(selector["boundary"]) != bool(edge.is_boundary):
+        return False
+
+    if "manifold" in selector and bool(selector["manifold"]) != bool(edge.is_manifold):
+        return False
+
+    mid = (edge.verts[0].co + edge.verts[1].co) * 0.5
+
+    box = selector.get("bbox")
+    if box:
+        vals = {
+            "x": _norm01(mid.x, lo.x, hi.x),
+            "y": _norm01(mid.y, lo.y, hi.y),
+            "z": _norm01(mid.z, lo.z, hi.z),
+        }
+        for axis, rng in box.items():
+            if not (float(rng[0]) <= vals[axis] <= float(rng[1])):
+                return False
+
+    region = selector.get("region")
+    if region and region != "all":
+        nx = _norm01(mid.x, lo.x, hi.x)
+        ny = _norm01(mid.y, lo.y, hi.y)
+        nz = _norm01(mid.z, lo.z, hi.z)
+        band = max(0.001, min(0.5, float(selector.get("band", 0.15))))
+        ok = {
+            "top": nz >= 1.0 - band,
+            "bottom": nz <= band,
+            "right": nx >= 1.0 - band,
+            "left": nx <= band,
+            "front": ny <= band,
+            "back": ny >= 1.0 - band,
+        }.get(region)
+        if ok is None:
+            raise ValueError("Unknown edge region: " + str(region))
+        if not ok:
+            return False
+
+    orient = selector.get("orientation")
+    if orient:
+        axis_name = orient.get("axis", "Z").upper()
+        sign = -1.0 if axis_name.startswith("-") else 1.0
+        axis_name = axis_name.replace("-", "").replace("+", "")
+        axis = {
+            "X": Vector((1, 0, 0)),
+            "Y": Vector((0, 1, 0)),
+            "Z": Vector((0, 0, 1)),
+        }[axis_name] * sign
+        d = edge.verts[1].co - edge.verts[0].co
+        if d.length < 1e-12:
+            return False
+        # abs allows either edge winding direction.
+        if abs(d.normalized().dot(axis)) < float(orient.get("min_dot", 0.8)):
+            return False
+
+    min_len = selector.get("min_length")
+    max_len = selector.get("max_length")
+    length = edge.calc_length()
+    if min_len is not None and length < float(min_len):
+        return False
+    if max_len is not None and length > float(max_len):
+        return False
+
+    return True
+
+
+def _select_edges(bm, selector):
+    bm.edges.ensure_lookup_table()
+    bm.edges.index_update()
+    lo, hi = _bm_bounds(bm)
+    return [e for e in bm.edges if _edge_matches(e, selector or {}, lo, hi)]
+
+
+def _edge_center(edges):
+    verts = list({v for e in edges for v in e.verts})
+    return _region_center(verts)
+
+
+def _boundary_components(bm):
+    remaining = {e for e in bm.edges if e.is_boundary}
+    components = []
+    while remaining:
+        seed = remaining.pop()
+        comp = [seed]
+        stack = [seed]
+        while stack:
+            e = stack.pop()
+            for v in e.verts:
+                for n in v.link_edges:
+                    if n in remaining and n.is_boundary:
+                        remaining.remove(n)
+                        comp.append(n)
+                        stack.append(n)
+        components.append(comp)
+    return components
+
+
+def _boundary_loop_from_spec(bm, spec):
+    comps = _boundary_components(bm)
+    if not comps:
+        raise ValueError("Mesh has no boundary loops")
+
+    component = (spec or {}).get("component")
+    if component:
+        axis_map = {
+            "topmost": (2, 1),
+            "bottommost": (2, -1),
+            "rightmost": (0, 1),
+            "leftmost": (0, -1),
+            "backmost": (1, 1),
+            "frontmost": (1, -1),
+        }
+        if component not in axis_map:
+            raise ValueError("Unknown boundary component selector: " + str(component))
+        axis, sign = axis_map[component]
+        return max(comps, key=lambda c: sign * _edge_center(c)[axis])
+
+    if "nearest" in (spec or {}):
+        p = Vector(spec["nearest"])
+        return min(comps, key=lambda c: (_edge_center(c) - p).length_squared)
+
+    wanted = set(_select_edges(bm, {**(spec or {}), "boundary": True}))
+    if wanted:
+        return max(comps, key=lambda c: len(wanted.intersection(c)))
+
+    if len(comps) == 1:
+        return comps[0]
+    raise ValueError("Boundary selector is ambiguous; use component or nearest")
+
+
+def edge_query(p):
+    o = active(p.get("name", ""))
+    if o.type != "MESH":
+        return result(False, error="Not a mesh")
+
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bm.normal_update()
+    edges = _select_edges(bm, p.get("selector", {}))
+    center = _edge_center(edges) if edges else Vector((0, 0, 0))
+    total_len = sum(e.calc_length() for e in edges)
+
+    out = result(
+        name=o.name,
+        edges=len(edges),
+        center=_round3(center),
+        length=round(float(total_len), 5),
+        boundary=sum(1 for e in edges if e.is_boundary),
+        object_h=object_digest(o),
+    )
+    if p.get("include_ids"):
+        cap = max(1, min(512, int(p.get("max_ids", 64))))
+        ids = [e.index for e in edges]
+        out["edge_ids"] = ids[:cap]
+        out["truncated"] = len(ids) > cap
+
+    bm.free()
+    return out
+
+
+def topology_batch(p):
+    o = active(p.get("name", ""))
+    if o.type != "MESH":
+        return result(False, error="Not a mesh")
+    if p.get("checkpoint", True):
+        bpy.ops.ed.undo_push(message="Smart MCP topology batch")
+
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bm.normal_update()
+    stats = []
+
+    try:
+        for op in p.get("ops", []):
+            typ = op["op"]
+
+            if typ == "loop_cut":
+                axis_name = op.get("axis", "Z").upper()
+                axis_i = {"X": 0, "Y": 1, "Z": 2}[axis_name]
+                lo, hi = _bm_bounds(bm)
+                t = max(0.0, min(1.0, float(op.get("position", 0.5))))
+                coord = lo[axis_i] + (hi[axis_i] - lo[axis_i]) * t
+                plane_co = Vector((0, 0, 0))
+                plane_no = Vector((0, 0, 0))
+                plane_co[axis_i] = coord
+                plane_no[axis_i] = 1.0
+                cut = bmesh.ops.bisect_plane(
+                    bm,
+                    geom=list(bm.verts) + list(bm.edges) + list(bm.faces),
+                    dist=float(op.get("epsilon", 1e-6)),
+                    plane_co=plane_co,
+                    plane_no=plane_no,
+                    clear_inner=False,
+                    clear_outer=False,
+                )
+                stats.append({"op": typ, "axis": axis_name, "position": t, "cut": len(cut.get("geom_cut", []))})
+                bm.normal_update()
+                continue
+
+            if typ == "bridge_boundaries":
+                first = _boundary_loop_from_spec(bm, op.get("first", {"component": "bottommost"}))
+                second = _boundary_loop_from_spec(bm, op.get("second", {"component": "topmost"}))
+                if set(first) == set(second):
+                    raise ValueError("bridge_boundaries selected the same loop twice")
+                kwargs = {
+                    "edges": list(dict.fromkeys(first + second)),
+                    "use_pairs": False,
+                }
+                if "twist" in op:
+                    kwargs["twist_offset"] = int(op["twist"])
+                bridged = bmesh.ops.bridge_loops(bm, **kwargs)
+                stats.append({
+                    "op": typ,
+                    "first": len(first),
+                    "second": len(second),
+                    "new": len(bridged.get("faces", [])),
+                })
+                bm.normal_update()
+                continue
+
+            edges = _select_edges(bm, op.get("selector", {}))
+            if not edges:
+                raise ValueError(typ + " selector matched no edges")
+
+            if typ in {"bevel_edges", "support_edges"}:
+                width = float(op.get("width", 0.01))
+                segments = 1 if typ == "support_edges" else max(1, int(op.get("segments", 2)))
+                bevel = bmesh.ops.bevel(
+                    bm,
+                    geom=edges,
+                    offset=width,
+                    offset_type="OFFSET",
+                    segments=segments,
+                    profile=float(op.get("profile", 0.5)),
+                    affect="EDGES",
+                )
+                stats.append({"op": typ, "edges": len(edges), "new": len(bevel.get("faces", []))})
+
+            elif typ == "subdivide_edges":
+                subdiv = bmesh.ops.subdivide_edges(
+                    bm,
+                    edges=edges,
+                    cuts=max(1, int(op.get("cuts", 1))),
+                    use_grid_fill=bool(op.get("grid_fill", False)),
+                    smooth=float(op.get("smooth", 0.0)),
+                )
+                stats.append({"op": typ, "edges": len(edges), "new": len(subdiv.get("geom_inner", []))})
+
+            elif typ == "collapse_edges":
+                before = len(bm.verts)
+                bmesh.ops.collapse(bm, edges=edges, uvs=True)
+                stats.append({"op": typ, "edges": len(edges), "removed_v": before - len(bm.verts)})
+
+            elif typ == "dissolve_edges":
+                bmesh.ops.dissolve_edges(
+                    bm,
+                    edges=edges,
+                    use_verts=bool(op.get("use_verts", False)),
+                    use_face_split=bool(op.get("use_face_split", False)),
+                )
+                stats.append({"op": typ, "edges": len(edges)})
+
+            else:
+                raise ValueError("Unsupported topology op: " + typ)
+
+            bm.normal_update()
+
+        bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+        bm.to_mesh(o.data)
+        o.data.update()
+    finally:
+        bm.free()
+
+    return result(
+        name=o.name,
+        ops=stats,
+        object=compact_obj(o),
+        scene_h=scene_digest(),
+    )
+
+
+def op_sweep(p):
+    path = [Vector(v) for v in p.get("path", [])]
+    profile = p.get("profile", [])
+    closed_path = bool(p.get("closed_path", False))
+    closed_profile = bool(p.get("closed_profile", True))
+    if len(path) < 2:
+        raise ValueError("sweep_profile needs at least 2 path points")
+    if len(profile) < 2:
+        raise ValueError("sweep_profile needs at least 2 profile points")
+
+    up_hint = Vector(p.get("up", [0, 0, 1]))
+    if up_hint.length < 1e-9:
+        up_hint = Vector((0, 0, 1))
+    up_hint.normalize()
+
+    verts = []
+    plen = len(path)
+    for i, point in enumerate(path):
+        if closed_path:
+            tangent = path[(i + 1) % plen] - path[(i - 1) % plen]
+        elif i == 0:
+            tangent = path[1] - path[0]
+        elif i == plen - 1:
+            tangent = path[-1] - path[-2]
+        else:
+            tangent = path[i + 1] - path[i - 1]
+
+        if tangent.length < 1e-9:
+            raise ValueError("Sweep path contains duplicate/degenerate points")
+        tangent.normalize()
+
+        side = tangent.cross(up_hint)
+        if side.length < 1e-6:
+            fallback = Vector((1, 0, 0)) if abs(tangent.x) < 0.9 else Vector((0, 1, 0))
+            side = tangent.cross(fallback)
+        side.normalize()
+        up = side.cross(tangent).normalized()
+
+        for x, y in profile:
+            verts.append(tuple(point + side * float(x) + up * float(y)))
+
+    ring = len(profile)
+    faces = []
+    span = plen if closed_path else plen - 1
+    edge_span = ring if closed_profile else ring - 1
+    for r in range(span):
+        nr = (r + 1) % plen
+        for j in range(edge_span):
+            nj = (j + 1) % ring
+            a0 = r * ring + j
+            a1 = r * ring + nj
+            b1 = nr * ring + nj
+            b0 = nr * ring + j
+            faces.append((a0, a1, b1, b0))
+
+    if p.get("cap", True) and not closed_path and closed_profile:
+        faces.append(tuple(reversed(range(0, ring))))
+        end0 = (plen - 1) * ring
+        faces.append(tuple(end0 + i for i in range(ring)))
+
+    me = bpy.data.meshes.new(p["name"] + "Mesh")
+    me.from_pydata(verts, [], faces)
+    me.update()
+    o = bpy.data.objects.new(p["name"], me)
+    bpy.context.collection.objects.link(o)
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+    return result(object=compact_obj(o), scene_h=scene_digest())
+
+
+def op_radial_array(p):
+    o = active(p.get("name", ""))
+    count = max(1, int(p.get("count", 1)))
+    if count == 1:
+        return result(created=0, names=[], scene_h=scene_digest())
+
+    axis_name = p.get("axis", "Z").upper()
+    axis = {
+        "X": Vector((1, 0, 0)),
+        "Y": Vector((0, 1, 0)),
+        "Z": Vector((0, 0, 1)),
+    }[axis_name]
+    center = Vector(p.get("center", [0, 0, 0]))
+    total = math.radians(float(p.get("angle_degrees", 360.0)))
+    linked = bool(p.get("linked", True))
+    created = []
+
+    original_matrix = o.matrix_world.copy()
+    for i in range(1, count):
+        angle = total * i / count
+        n = o.copy()
+        if o.data and not linked:
+            n.data = o.data.copy()
+        bpy.context.collection.objects.link(n)
+        n.name = f"{o.name}_Radial_{i:02d}"
+        rot = Matrix.Rotation(angle, 4, axis)
+        n.matrix_world = Matrix.Translation(center) @ rot @ Matrix.Translation(-center) @ original_matrix
+        created.append(n.name)
+
+    return result(created=len(created), names=created[:64], scene_h=scene_digest())
+
+
 def mesh_edit_batch(p):
     o = active(p.get("name", ""))
     if o.type != "MESH":
@@ -666,6 +1067,14 @@ def dispatch(a, p):
         return mesh_query(p)
     if a == "mesh_edit_batch":
         return mesh_edit_batch(p)
+    if a == "edge_query":
+        return edge_query(p)
+    if a == "topology_batch":
+        return topology_batch(p)
+    if a == "sweep_profile":
+        return op_sweep(p)
+    if a == "radial_array":
+        return op_radial_array(p)
     if a == "lathe_profile":
         return op_lathe(p)
     if a == "loft_sections":
@@ -784,7 +1193,7 @@ class SMARTMCP_PT_panel(bpy.types.Panel):
 
     def draw(self, ctx):
         self.layout.label(text=("Running :9877" if _running else "Stopped"))
-        self.layout.label(text="Semantic Modeling V0.2")
+        self.layout.label(text="Advanced Topology V0.3")
         self.layout.operator("smartmcp.toggle")
 
 
