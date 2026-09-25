@@ -5,6 +5,7 @@ import socket
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from .blueprint import validate_blueprint_spec
 
 mcp = FastMCP("Smart Blender Compact")
 HOST, PORT = "127.0.0.1", 9877
@@ -43,7 +44,11 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
         return _call("mesh_query", name=name, selector=selector or {"region": "all"})
     if kind == "edges":
         return _call("edge_query", name=name, selector=selector or {})
-    raise ValueError("kind must be topology, faces, or edges")
+    if kind == "blueprint":
+        if not isinstance(selector, dict):
+            raise ValueError("selector must contain the blueprint manifest")
+        return validate_blueprint_spec(selector)
+    raise ValueError("kind must be topology, faces, edges, or blueprint")
 
 
 @mcp.tool()
