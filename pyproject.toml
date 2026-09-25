@@ -1,12 +1,12 @@
 [project]
 name = "blender-smart-modeling-mcp"
-version = "0.2.0"
+version = "0.3.0"
 description = "Token-efficient semantic modeling MCP for Blender"
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.2.0"]
 
 [project.scripts]
-blender-smart-mcp = "smart_blender_mcp.server:main"
+blender-smart-mcp = "smart_blender_mcp.server:main"\nblender-smart-mcp-compact = "smart_blender_mcp.compact_server:main"
 
 [build-system]
 requires = ["hatchling"]
