@@ -38,7 +38,7 @@ def state(changed_since: str = "") -> dict:
 
 @mcp.tool()
 def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
-    """Inspect topology, faces, or edges without dumping the mesh."""
+    """Compact inspection: topology/faces/edges, cache or patch a blueprint, or score silhouette fit."""
     if kind == "topology":
         return _call("topology_state", name=name)
     if kind == "faces":
@@ -120,7 +120,9 @@ def model(
     return_steps: bool = False,
 ) -> dict:
     """Run a mixed modeling plan in one call.
-    step do: create, object, mesh, topology, lathe, loft, sweep, curve, radial, validate."""
+    do supports create/object/mesh/topology/lathe/loft/sweep/curve/radial,
+    orthographic (cached multi-part engineering blueprint), cameras, and validate.
+    For orthographic use blueprint_id after inspect(kind='blueprint') to avoid resending the manifest."""
     resolved = []
     for step in steps:
         item = dict(step)
