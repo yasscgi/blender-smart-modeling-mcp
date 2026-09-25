@@ -4,8 +4,8 @@ import hashlib
 import json
 from typing import Any
 
-
 VIEWS = ("front", "side", "top")
+STRATEGIES = {"orthographic_hull", "lathe", "loft", "sweep"}
 
 
 def _span(points: list[list[float]], axis: int) -> float:
@@ -13,10 +13,10 @@ def _span(points: list[list[float]], axis: int) -> float:
     return max(vals) - min(vals) if vals else 0.0
 
 
-def _valid_polygon(points: Any) -> bool:
+def _valid_polygon(points: Any, minimum: int = 3) -> bool:
     return (
         isinstance(points, list)
-        and len(points) >= 3
+        and len(points) >= minimum
         and all(
             isinstance(p, (list, tuple))
             and len(p) == 2
@@ -26,37 +26,77 @@ def _valid_polygon(points: Any) -> bool:
     )
 
 
+def _valid_vec3(value: Any) -> bool:
+    return (
+        isinstance(value, (list, tuple))
+        and len(value) == 3
+        and all(isinstance(v, (int, float)) for v in value)
+    )
+
+
 def blueprint_digest(spec: dict) -> str:
     raw = json.dumps(spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.blake2s(raw.encode("utf-8"), digest_size=8).hexdigest()
 
 
+def _validate_strategy(part: dict, pid: str, errors: list[str], warnings: list[str]) -> tuple[str, float]:
+    strategy = str(part.get("strategy", "orthographic_hull"))
+    if strategy not in STRATEGIES:
+        errors.append(f"{pid}: unsupported strategy {strategy!r}")
+        return strategy, 0.0
+
+    if strategy == "lathe":
+        profile = part.get("profile", [])
+        if not _valid_polygon(profile, minimum=2):
+            errors.append(f"{pid}: lathe strategy requires profile [[radius,z], ...]")
+            return strategy, 0.0
+        if any(float(p[0]) < 0 for p in profile):
+            errors.append(f"{pid}: lathe radii must be >= 0")
+            return strategy, 0.0
+        return strategy, 1.0
+
+    if strategy == "loft":
+        sections = part.get("sections", [])
+        if not isinstance(sections, list) or len(sections) < 2:
+            errors.append(f"{pid}: loft strategy requires at least 2 sections")
+            return strategy, 0.0
+        counts = []
+        for si, section in enumerate(sections):
+            pts = section.get("points", []) if isinstance(section, dict) else []
+            if not _valid_polygon(pts):
+                errors.append(f"{pid}: loft section {si} needs at least 3 2D points")
+                return strategy, 0.0
+            try:
+                float(section["z"])
+            except Exception:
+                errors.append(f"{pid}: loft section {si} requires numeric z")
+                return strategy, 0.0
+            counts.append(len(pts))
+        if len(set(counts)) != 1:
+            errors.append(f"{pid}: all loft sections must use the same point count")
+            return strategy, 0.0
+        return strategy, 1.0
+
+    if strategy == "sweep":
+        path = part.get("path", [])
+        profile = part.get("profile", [])
+        if not (
+            isinstance(path, list)
+            and len(path) >= 2
+            and all(_valid_vec3(v) for v in path)
+        ):
+            errors.append(f"{pid}: sweep strategy requires path with at least 2 XYZ points")
+            return strategy, 0.0
+        if not _valid_polygon(profile, minimum=2):
+            errors.append(f"{pid}: sweep strategy requires a 2D profile with at least 2 points")
+            return strategy, 0.0
+        return strategy, 1.0
+
+    return strategy, -1.0  # orthographic hull score is calculated from views.
+
+
 def validate_blueprint_spec(spec: dict) -> dict:
-    """Validate a compact engineering blueprint manifest.
-
-    Supported manifest:
-      {
-        "model_id": "...",
-        "units": "mm",
-        "coordinate_mode": "normalized" | "mm",
-        "parts": [
-          {
-            "id": "P01",
-            "name": "Body",
-            "dimensions_mm": {"width": 80, "depth": 50, "height": 120},
-            "views": {
-              "front": [[u,v], ...],
-              "side": [[u,v], ...],
-              "top": [[u,v], ...]
-            },
-            "position_mm": [0,0,0],
-            "confidence": 0.9
-          }
-        ]
-      }
-
-    Normalized coordinates use 0..1 within each orthographic view.
-    """
+    """Validate a compact engineering blueprint manifest."""
     errors: list[str] = []
     warnings: list[str] = []
     parts_out: list[dict] = []
@@ -64,8 +104,7 @@ def validate_blueprint_spec(spec: dict) -> dict:
     if not isinstance(spec, dict):
         return {"ok": False, "errors": ["spec must be an object"], "warnings": []}
 
-    units = spec.get("units", "mm")
-    if units != "mm":
+    if spec.get("units", "mm") != "mm":
         errors.append("Only millimeter engineering manifests are supported in v0.4")
 
     mode = spec.get("coordinate_mode", "normalized")
@@ -99,11 +138,13 @@ def validate_blueprint_spec(spec: dict) -> dict:
             errors.append(f"{pid}: dimensions_mm must contain positive width/depth/height")
             width = depth = height = 0.0
 
+        strategy, strategy_score = _validate_strategy(part, pid, errors, warnings)
+
         views = part.get("views", {})
-        available = []
-        missing = []
+        available: list[str] = []
+        missing: list[str] = []
         for view in VIEWS:
-            pts = views.get(view)
+            pts = views.get(view) if isinstance(views, dict) else None
             if pts is None:
                 missing.append(view)
                 continue
@@ -111,23 +152,26 @@ def validate_blueprint_spec(spec: dict) -> dict:
                 errors.append(f"{pid}: {view} must contain at least 3 numeric 2D points")
                 continue
             available.append(view)
-
             if mode == "normalized":
                 outside = sum(
-                    1 for p in pts
-                    if float(p[0]) < -0.05 or float(p[0]) > 1.05
-                    or float(p[1]) < -0.05 or float(p[1]) > 1.05
+                    1
+                    for p in pts
+                    if float(p[0]) < -0.05
+                    or float(p[0]) > 1.05
+                    or float(p[1]) < -0.05
+                    or float(p[1]) > 1.05
                 )
                 if outside:
                     warnings.append(f"{pid}: {view} has {outside} normalized points outside 0..1")
 
-        if len(available) < 2:
-            warnings.append(f"{pid}: only {len(available)} orthographic view(s); 2+ strongly recommended")
-        if missing:
-            warnings.append(f"{pid}: missing views: {','.join(missing)}")
+        if strategy == "orthographic_hull":
+            if len(available) < 2:
+                warnings.append(f"{pid}: only {len(available)} orthographic view(s); 2+ strongly recommended")
+            if missing:
+                warnings.append(f"{pid}: missing views: {','.join(missing)}")
 
         conflicts = []
-        if mode == "mm" and width and depth and height:
+        if strategy == "orthographic_hull" and mode == "mm" and width and depth and height:
             tol = float(part.get("dimension_tolerance", 0.08))
             checks = []
             if _valid_polygon(views.get("front")):
@@ -147,11 +191,13 @@ def validate_blueprint_spec(spec: dict) -> dict:
                 ]
             for label, got, expected in checks:
                 if expected > 0 and abs(got - expected) / expected > tol:
-                    conflicts.append({
-                        "field": label,
-                        "span_mm": round(got, 3),
-                        "dimension_mm": round(expected, 3),
-                    })
+                    conflicts.append(
+                        {
+                            "field": label,
+                            "span_mm": round(got, 3),
+                            "dimension_mm": round(expected, 3),
+                        }
+                    )
             if conflicts:
                 warnings.append(f"{pid}: orthographic spans conflict with stated dimensions")
 
@@ -170,7 +216,12 @@ def validate_blueprint_spec(spec: dict) -> dict:
                 continue
             ftype = feature.get("type")
             if ftype in {"hole_cylinder", "boss_cylinder"}:
-                if float(feature.get("diameter_mm", 0)) <= 0 or float(feature.get("depth_mm", 0)) <= 0:
+                try:
+                    diameter = float(feature.get("diameter_mm", 0))
+                    fdepth = float(feature.get("depth_mm", 0))
+                    if diameter <= 0 or fdepth <= 0:
+                        raise ValueError
+                except Exception:
                     errors.append(f"{pid}: {ftype} requires positive diameter_mm and depth_mm")
                     continue
                 if str(feature.get("axis", "Z")).upper() not in {"X", "Y", "Z"}:
@@ -179,33 +230,46 @@ def validate_blueprint_spec(spec: dict) -> dict:
                 valid_features += 1
             elif ftype in {"cut_box", "boss_box"}:
                 fdims = feature.get("dimensions_mm", [])
-                if (
-                    not isinstance(fdims, list)
-                    or len(fdims) != 3
-                    or any(float(v) <= 0 for v in fdims)
-                ):
+                try:
+                    valid_dims = (
+                        isinstance(fdims, list)
+                        and len(fdims) == 3
+                        and all(float(v) > 0 for v in fdims)
+                    )
+                except Exception:
+                    valid_dims = False
+                if not valid_dims:
                     errors.append(f"{pid}: {ftype} requires 3 positive dimensions_mm")
                     continue
                 valid_features += 1
             else:
                 warnings.append(f"{pid}: unsupported feature type {ftype!r}")
 
-        view_score = {0: 0.0, 1: 0.45, 2: 0.82, 3: 1.0}[min(3, len(available))]
-        conflict_penalty = min(0.35, 0.08 * len(conflicts))
-        reconstructability = max(0.0, min(1.0, view_score * confidence - conflict_penalty))
-        if reconstructability < 0.65:
-            warnings.append(f"{pid}: reconstructability is low ({reconstructability:.2f}); add another orthographic view or dimensions")
+        if strategy == "orthographic_hull":
+            base_score = {0: 0.0, 1: 0.45, 2: 0.82, 3: 1.0}[min(3, len(available))]
+        else:
+            base_score = strategy_score
 
-        parts_out.append({
-            "id": pid,
-            "views": available,
-            "missing": missing,
-            "dimensions_mm": [round(width, 3), round(depth, 3), round(height, 3)],
-            "conflicts": conflicts,
-            "confidence": round(confidence, 3),
-            "features": valid_features,
-            "reconstructability": round(reconstructability, 3),
-        })
+        conflict_penalty = min(0.35, 0.08 * len(conflicts))
+        reconstructability = max(0.0, min(1.0, base_score * confidence - conflict_penalty))
+        if reconstructability < 0.65:
+            warnings.append(
+                f"{pid}: reconstructability is low ({reconstructability:.2f}); improve the selected strategy/reference data"
+            )
+
+        parts_out.append(
+            {
+                "id": pid,
+                "strategy": strategy,
+                "views": available,
+                "missing": missing,
+                "dimensions_mm": [round(width, 3), round(depth, 3), round(height, 3)],
+                "conflicts": conflicts,
+                "confidence": round(confidence, 3),
+                "features": valid_features,
+                "reconstructability": round(reconstructability, 3),
+            }
+        )
 
     valid_ids = {p["id"] for p in parts_out}
     links = spec.get("assembly_links", []) or []
@@ -245,10 +309,13 @@ def validate_blueprint_spec(spec: dict) -> dict:
         "parts": parts_out,
         "part_count": len(parts_out),
         "assembly_links": valid_links,
-        "engineering_ready": (not errors) and all(p["reconstructability"] >= 0.65 for p in parts_out),
+        "engineering_ready": (not errors)
+        and all(p["reconstructability"] >= 0.65 for p in parts_out),
         "avg_reconstructability": round(
             sum(p["reconstructability"] for p in parts_out) / len(parts_out), 3
-        ) if parts_out else 0.0,
+        )
+        if parts_out
+        else 0.0,
         "blueprint_h": blueprint_digest(spec),
     }
 
@@ -271,7 +338,6 @@ def part_polygon_mm(part: dict, view: str, mode: str) -> list[list[float]]:
 
     if mode == "mm":
         return [[float(a), float(b)] for a, b in points]
-
     if view == "front":
         return [[(float(u) - 0.5) * w, (float(v) - 0.5) * h] for u, v in points]
     if view == "side":
