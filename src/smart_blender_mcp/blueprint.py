@@ -245,6 +245,31 @@ def validate_blueprint_spec(spec: dict) -> dict:
             else:
                 warnings.append(f"{pid}: unsupported feature type {ftype!r}")
 
+            pattern = feature.get("pattern")
+            if pattern is not None:
+                if not isinstance(pattern, dict):
+                    errors.append(f"{pid}: feature pattern must be an object")
+                else:
+                    ptype = pattern.get("type")
+                    try:
+                        count = int(pattern.get("count", 1))
+                    except Exception:
+                        count = 0
+                    if count < 1 or count > 256:
+                        errors.append(f"{pid}: feature pattern count must be 1..256")
+                    if ptype == "linear":
+                        step = pattern.get("step_mm", [])
+                        if not _valid_vec3(step):
+                            errors.append(f"{pid}: linear pattern requires step_mm XYZ")
+                    elif ptype == "radial":
+                        if str(pattern.get("axis", "Z")).upper() not in {"X", "Y", "Z"}:
+                            errors.append(f"{pid}: radial pattern axis must be X/Y/Z")
+                        center = pattern.get("center_mm", [0, 0, 0])
+                        if not _valid_vec3(center):
+                            errors.append(f"{pid}: radial pattern center_mm must be XYZ")
+                    else:
+                        errors.append(f"{pid}: unsupported feature pattern {ptype!r}")
+
         if strategy == "orthographic_hull":
             base_score = {0: 0.0, 1: 0.45, 2: 0.82, 3: 1.0}[min(3, len(available))]
         else:
