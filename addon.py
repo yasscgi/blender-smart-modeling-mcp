@@ -1782,6 +1782,183 @@ def engineering_contact_sheet(p):
             if obj:
                 obj.hide_render = state
 
+def _plan_points_normalized(part, view, mode):
+    points = part.get("views", {}).get(view, [])
+    if not points:
+        return []
+    if mode == "normalized":
+        return [(float(u), float(v)) for u, v in points]
+
+    dims = part.get("dimensions_mm", {})
+    w = float(dims.get("width", 1.0))
+    d = float(dims.get("depth", 1.0))
+    h = float(dims.get("height", 1.0))
+    out = []
+    for a, b in points:
+        a = float(a); b = float(b)
+        if view == "front":
+            out.append((a / w + 0.5, b / h + 0.5))
+        elif view == "side":
+            out.append((a / d + 0.5, b / h + 0.5))
+        elif view == "top":
+            out.append((a / w + 0.5, b / d + 0.5))
+    return out
+
+
+def _point_in_polygon_2d(x, y, poly):
+    inside = False
+    j = len(poly) - 1
+    for i in range(len(poly)):
+        xi, yi = poly[i]
+        xj, yj = poly[j]
+        if ((yi > y) != (yj > y)):
+            denom = (yj - yi)
+            if abs(denom) < 1e-12:
+                denom = 1e-12
+            cross_x = (xj - xi) * (y - yi) / denom + xi
+            if x < cross_x:
+                inside = not inside
+        j = i
+    return inside
+
+
+def _point_in_triangle_2d(px, py, a, b, c):
+    ax, ay = a; bx, by = b; cx, cy = c
+    den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    if abs(den) < 1e-14:
+        return False
+    alpha = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den
+    beta = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den
+    gamma = 1.0 - alpha - beta
+    eps = -1e-7
+    return alpha >= eps and beta >= eps and gamma >= eps
+
+
+def _raster_polygon(poly, resolution):
+    mask = bytearray(resolution * resolution)
+    if len(poly) < 3:
+        return mask
+    min_x = max(0, int(math.floor(min(p[0] for p in poly) * resolution)))
+    max_x = min(resolution - 1, int(math.ceil(max(p[0] for p in poly) * resolution)))
+    min_y = max(0, int(math.floor(min(p[1] for p in poly) * resolution)))
+    max_y = min(resolution - 1, int(math.ceil(max(p[1] for p in poly) * resolution)))
+    for iy in range(min_y, max_y + 1):
+        y = (iy + 0.5) / resolution
+        row = iy * resolution
+        for ix in range(min_x, max_x + 1):
+            x = (ix + 0.5) / resolution
+            if _point_in_polygon_2d(x, y, poly):
+                mask[row + ix] = 1
+    return mask
+
+
+def _project_local_vertex(co, view, dims):
+    w, d, h = dims
+    if view == "front":
+        return (float(co.x) / w + 0.5, float(co.z) / h + 0.5)
+    if view == "side":
+        return (float(co.y) / d + 0.5, float(co.z) / h + 0.5)
+    if view == "top":
+        return (float(co.x) / w + 0.5, float(co.y) / d + 0.5)
+    raise ValueError("Unsupported silhouette view: " + view)
+
+
+def _raster_mesh_projection(obj, view, dims, resolution):
+    mask = bytearray(resolution * resolution)
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    evaluated = obj.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    try:
+        mesh.calc_loop_triangles()
+        projected = [_project_local_vertex(v.co, view, dims) for v in mesh.vertices]
+        for tri in mesh.loop_triangles:
+            a, b, c = [projected[i] for i in tri.vertices]
+            min_x = max(0, int(math.floor(min(a[0], b[0], c[0]) * resolution)))
+            max_x = min(resolution - 1, int(math.ceil(max(a[0], b[0], c[0]) * resolution)))
+            min_y = max(0, int(math.floor(min(a[1], b[1], c[1]) * resolution)))
+            max_y = min(resolution - 1, int(math.ceil(max(a[1], b[1], c[1]) * resolution)))
+            if min_x > max_x or min_y > max_y:
+                continue
+            for iy in range(min_y, max_y + 1):
+                py = (iy + 0.5) / resolution
+                row = iy * resolution
+                for ix in range(min_x, max_x + 1):
+                    idx = row + ix
+                    if mask[idx]:
+                        continue
+                    px = (ix + 0.5) / resolution
+                    if _point_in_triangle_2d(px, py, a, b, c):
+                        mask[idx] = 1
+    finally:
+        evaluated.to_mesh_clear()
+    return mask
+
+
+def silhouette_fit(p):
+    part = p.get("part", {})
+    part_id = str(p.get("part_id") or part.get("id", ""))
+    if not part_id:
+        return result(False, error="part_id is required")
+
+    obj = next(
+        (
+            o for o in bpy.context.scene.objects
+            if o.type == "MESH" and str(o.get("smart_mcp_part_id", "")) == part_id
+        ),
+        None,
+    )
+    if obj is None:
+        return result(False, error="Reconstructed part not found: " + part_id)
+
+    dims_d = part.get("dimensions_mm", {})
+    try:
+        dims = (
+            float(dims_d["width"]),
+            float(dims_d["depth"]),
+            float(dims_d["height"]),
+        )
+        if min(dims) <= 0:
+            raise ValueError
+    except Exception:
+        return result(False, error="Part dimensions_mm are invalid")
+
+    resolution = max(24, min(int(p.get("resolution", 64)), 160))
+    mode = str(p.get("coordinate_mode", "normalized"))
+    scores = {}
+    values = []
+
+    for view in ("front", "side", "top"):
+        target_poly = _plan_points_normalized(part, view, mode)
+        if len(target_poly) < 3:
+            continue
+        target_mask = _raster_polygon(target_poly, resolution)
+        mesh_mask = _raster_mesh_projection(obj, view, dims, resolution)
+        intersection = sum(1 for a, b in zip(target_mask, mesh_mask) if a and b)
+        union = sum(1 for a, b in zip(target_mask, mesh_mask) if a or b)
+        target_px = sum(target_mask)
+        mesh_px = sum(mesh_mask)
+        iou = float(intersection) / union if union else 1.0
+        scores[view] = {
+            "iou": round(iou, 4),
+            "target_px": target_px,
+            "mesh_px": mesh_px,
+        }
+        values.append(iou)
+
+    if not values:
+        return result(False, error="No canonical plan silhouettes available for fit scoring")
+
+    mean_iou = sum(values) / len(values)
+    return result(
+        part_id=part_id,
+        resolution=resolution,
+        views=scores,
+        mean_iou=round(mean_iou, 4),
+        fit_ready=mean_iou >= float(p.get("threshold", 0.90)),
+        object_h=object_digest(obj),
+    )
+
+
 def validate(p):
     o = active(p.get("name", ""))
     if o.type != "MESH":
@@ -1913,6 +2090,8 @@ def dispatch(a, p):
         return setup_engineering_cameras(p)
     if a == "engineering_contact_sheet":
         return engineering_contact_sheet(p)
+    if a == "silhouette_fit":
+        return silhouette_fit(p)
     if a == "scene_state":
         h = scene_digest()
         if p.get("changed_since") and p["changed_since"] == h:
