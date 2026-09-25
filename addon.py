@@ -1208,6 +1208,73 @@ def _boolean_intersect(base, cutter):
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
+def _engineering_feature_object(feature, collection, index):
+    ftype = feature.get("type", "")
+    center = [float(v) for v in feature.get("center_mm", [0, 0, 0])]
+    obj = None
+
+    if ftype in {"hole_cylinder", "boss_cylinder"}:
+        diameter = float(feature.get("diameter_mm", 1.0))
+        depth = float(feature.get("depth_mm", 1.0))
+        axis = str(feature.get("axis", "Z")).upper()
+        rotation = (0.0, 0.0, 0.0)
+        if axis == "X":
+            rotation = (0.0, math.pi / 2.0, 0.0)
+        elif axis == "Y":
+            rotation = (math.pi / 2.0, 0.0, 0.0)
+        elif axis != "Z":
+            raise ValueError("Cylinder feature axis must be X, Y, or Z")
+        bpy.ops.mesh.primitive_cylinder_add(
+            vertices=max(12, int(feature.get("segments", 48))),
+            radius=diameter / 2.0,
+            depth=depth,
+            location=center,
+            rotation=rotation,
+        )
+        obj = bpy.context.object
+
+    elif ftype in {"cut_box", "boss_box"}:
+        dims = feature.get("dimensions_mm", [1, 1, 1])
+        if len(dims) != 3:
+            raise ValueError("Box feature dimensions_mm must have 3 values")
+        rot_deg = feature.get("rotation_deg", [0, 0, 0])
+        rotation = tuple(math.radians(float(v)) for v in rot_deg)
+        bpy.ops.mesh.primitive_cube_add(location=center, rotation=rotation)
+        obj = bpy.context.object
+        obj.dimensions = [float(v) for v in dims]
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+
+    else:
+        raise ValueError("Unsupported engineering feature: " + str(ftype))
+
+    obj.name = "__ENG_FEATURE_%03d" % index
+    # Move from the active scene collection to the reconstruction collection.
+    for col in list(obj.users_collection):
+        col.objects.unlink(obj)
+    collection.objects.link(obj)
+    return obj
+
+
+def _apply_engineering_features(base, features, collection, cleanup=True):
+    applied = []
+    for i, feature in enumerate(features or []):
+        ftype = feature.get("type", "")
+        tool = _engineering_feature_object(feature, collection, i)
+        operation = "DIFFERENCE" if ftype in {"hole_cylinder", "cut_box"} else "UNION"
+        try:
+            active(base.name)
+            mod = base.modifiers.new("EngineeringFeature", "BOOLEAN")
+            mod.operation = operation
+            mod.solver = "EXACT"
+            mod.object = tool
+            bpy.ops.object.modifier_apply(modifier=mod.name)
+            applied.append(ftype)
+        finally:
+            if cleanup and tool.name in bpy.data.objects:
+                bpy.data.objects.remove(tool, do_unlink=True)
+    return applied
+
+
 def reconstruct_blueprint(p):
     spec = p.get("spec", {})
     parts = spec.get("parts", [])
@@ -1267,6 +1334,18 @@ def reconstruct_blueprint(p):
                     bpy.data.objects.remove(cutter, do_unlink=True)
 
         base.name = name
+
+        feature_names = []
+        try:
+            feature_names = _apply_engineering_features(
+                base,
+                part.get("features", []),
+                collection,
+                cleanup=cleanup,
+            )
+        except Exception as exc:
+            warnings.append(pid + ": feature error: " + str(exc))
+
         pos = part.get("position_mm", [0, 0, 0])
         if len(pos) == 3:
             base.location = [float(v) for v in pos]
@@ -1285,6 +1364,7 @@ def reconstruct_blueprint(p):
             "id": pid,
             "name": base.name,
             "views": [v[0] for v in usable],
+            "features": feature_names,
             "object": compact_obj(base),
         })
 
