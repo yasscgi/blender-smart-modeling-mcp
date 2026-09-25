@@ -267,6 +267,56 @@ V0.3 adds:
 
 The compact `model` tool can place one Blender undo checkpoint for the entire plan. With `rollback_on_error=true`, a failed step attempts to restore the scene to the state before the batch.
 
+## V0.4 — Engineering 2D Plan → 3D
+
+V0.4 adds a multi-part orthographic reconstruction pipeline intended for AI-generated engineering reference sheets.
+
+**Pipeline**
+
+`master reference sheet → Blueprint Manifest → validation → Front/Side/Top visual hull → engineering features → quality report → topology refinement`
+
+The reference image can contain many parts (P01, P02, ...). The vision model reads it once and emits one compact manifest for all parts.
+
+### Compact usage
+
+Validate the whole plan without opening more MCP tools:
+
+```python
+inspect(kind="blueprint", selector=manifest)
+```
+
+Then reconstruct all parts in one modeling transaction:
+
+```json
+{
+  "steps": [
+    {
+      "do": "orthographic",
+      "spec": "<Blueprint Manifest>",
+      "bevel_mm": 0.6,
+      "cleanup": true,
+      "collection_name": "My_Model"
+    }
+  ]
+}
+```
+
+V0.4 reconstructs each part by intersecting silhouette prisms from the canonical Front, Side and Top plans. It then applies explicit details such as cylindrical holes, cylindrical bosses, box cuts and box bosses.
+
+Each reconstructed part returns:
+
+- views actually used,
+- engineering features applied,
+- final dimensions,
+- dimension error percentage,
+- boundary-edge count,
+- non-manifold-edge count,
+- compact geometry hash.
+
+Use `do:"cameras"` to create six orthographic engineering cameras for Front/Back/Left/Right/Top/Bottom review.
+
+See `docs/REFERENCE_BLUEPRINT.md` and `examples/engineering_blueprint.json`.
+
 ## Install
 
 Requires Blender 4.2+ and Python 3.10+.
@@ -310,4 +360,4 @@ uvx --from . blender-smart-mcp
 
 ## Next layer
 
-The next versions can add edge-loop recognition, bridge loops, profile sweep, radial details, support-loop insertion, reference-camera calibration, silhouette fitting and local topology patches while keeping the same compact protocol.
+The next engineering layer will focus on automated silhouette comparison, local error heatmaps, constraint-driven refinement, sockets/pegs from assembly links, and reference-driven detail passes without expanding the compact MCP surface.
