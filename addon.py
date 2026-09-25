@@ -1382,9 +1382,14 @@ def _apply_assembly_links(spec, objects_by_id, collection, cleanup=True):
 
 def reconstruct_blueprint(p):
     spec = p.get("spec", {})
-    parts = spec.get("parts", [])
+    all_parts = spec.get("parts", [])
+    selected_ids = {str(v) for v in p.get("part_ids", [])}
+    parts = [
+        part for part in all_parts
+        if not selected_ids or str(part.get("id", "")) in selected_ids
+    ]
     if not parts:
-        return result(False, error="Blueprint contains no parts")
+        return result(False, error="Blueprint contains no selected parts")
 
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
@@ -1409,6 +1414,16 @@ def reconstruct_blueprint(p):
     for idx, part in enumerate(parts):
         pid = str(part.get("id") or f"P{idx+1:02d}")
         name = str(part.get("name") or pid)
+
+        # Replace only objects previously generated for this stable part id.
+        if bool(p.get("replace_existing", True)):
+            stale = [
+                obj for obj in list(collection.objects)
+                if str(obj.get("smart_mcp_part_id", "")) == pid
+            ]
+            for obj in stale:
+                bpy.data.objects.remove(obj, do_unlink=True)
+
         dims = part.get("dimensions_mm", {})
         try:
             w = float(dims["width"]); d = float(dims["depth"]); h = float(dims["height"])
@@ -1440,6 +1455,8 @@ def reconstruct_blueprint(p):
                     bpy.data.objects.remove(cutter, do_unlink=True)
 
         base.name = name
+        base["smart_mcp_part_id"] = pid
+        base["smart_mcp_model_id"] = str(spec.get("model_id", "model"))
 
         feature_names = []
         try:
@@ -1484,8 +1501,14 @@ def reconstruct_blueprint(p):
     if not built:
         return result(False, error="No parts could be reconstructed", warnings=warnings)
 
+    link_spec = dict(spec)
+    link_spec["assembly_links"] = [
+        link for link in spec.get("assembly_links", []) or []
+        if str(link.get("from", "")) in objects_by_id
+        and str(link.get("to", "")) in objects_by_id
+    ]
     assembly = _apply_assembly_links(
-        spec,
+        link_spec,
         objects_by_id,
         collection,
         cleanup=cleanup,
