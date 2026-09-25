@@ -5,10 +5,11 @@ import socket
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
-from .blueprint import validate_blueprint_spec
+from .blueprint import validate_blueprint_spec, blueprint_digest
 
 mcp = FastMCP("Smart Blender Compact")
 HOST, PORT = "127.0.0.1", 9877
+_BLUEPRINT_CACHE: dict[str, dict] = {}
 
 
 def _recv(s: socket.socket, n: int) -> bytes:
@@ -47,7 +48,13 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
     if kind == "blueprint":
         if not isinstance(selector, dict):
             raise ValueError("selector must contain the blueprint manifest")
-        return validate_blueprint_spec(selector)
+        report = validate_blueprint_spec(selector)
+        if report.get("ok"):
+            bid = blueprint_digest(selector)
+            _BLUEPRINT_CACHE[bid] = selector
+            report["blueprint_id"] = bid
+            report["cached"] = True
+        return report
     raise ValueError("kind must be topology, faces, edges, or blueprint")
 
 
@@ -60,9 +67,27 @@ def model(
 ) -> dict:
     """Run a mixed modeling plan in one call.
     step do: create, object, mesh, topology, lathe, loft, sweep, curve, radial, validate."""
+    resolved = []
+    for step in steps:
+        item = dict(step)
+        if item.get("do") == "orthographic":
+            bid = item.pop("blueprint_id", "")
+            if "spec" not in item and bid:
+                spec = _BLUEPRINT_CACHE.get(bid)
+                if spec is None:
+                    raise ValueError("Unknown blueprint_id; call inspect(kind='blueprint') first")
+                item["spec"] = spec
+            elif isinstance(item.get("spec"), dict):
+                spec = item["spec"]
+                report = validate_blueprint_spec(spec)
+                if not report.get("ok"):
+                    return report
+                _BLUEPRINT_CACHE[blueprint_digest(spec)] = spec
+        resolved.append(item)
+
     return _call(
         "smart_batch",
-        steps=steps,
+        steps=resolved,
         checkpoint=checkpoint,
         rollback_on_error=rollback_on_error,
         return_steps=return_steps,
