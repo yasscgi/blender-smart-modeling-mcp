@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile Python sources
-        run: python -m py_compile addon.py src/smart_blender_mcp/server.py src/smart_blender_mcp/compact_server.py src/smart_blender_mcp/blueprint.py
+        run: python -m py_compile addon.py src/smart_blender_mcp/server.py src/smart_blender_mcp/compact_server.py src/smart_blender_mcp/blueprint.py src/smart_blender_mcp/planner.py src/smart_blender_mcp/benchmark.py
       - name: Validate blueprint schema
         env:
           PYTHONPATH: src
@@ -26,6 +26,19 @@ jobs:
       - name: Install package
         run: python -m pip install .
       - name: Import package entrypoints
-        run: python -c "import smart_blender_mcp, smart_blender_mcp.server, smart_blender_mcp.compact_server"
+        run: python -c "import smart_blender_mcp, smart_blender_mcp.server, smart_blender_mcp.compact_server, smart_blender_mcp.planner, smart_blender_mcp.benchmark"
       - name: Validate JSON schema file
         run: python -m json.tool schemas/engineering-blueprint.schema.json > /dev/null
+      - name: Test planner and benchmark
+        env:
+          PYTHONPATH: src
+        run: >-
+          python -c "import json;
+          from pathlib import Path;
+          from smart_blender_mcp.planner import make_plan;
+          from smart_blender_mcp.benchmark import benchmark_manifest;
+          s=json.loads(Path('examples/engineering_blueprint.json').read_text());
+          p=make_plan(s); b=benchmark_manifest(s);
+          assert p['ok'] and len(p['parts'])==2;
+          assert b['ok'] and b['estimated_context_savings_pct'] > 0;
+          print(json.dumps({'plan':p,'benchmark':b}, indent=2))"
