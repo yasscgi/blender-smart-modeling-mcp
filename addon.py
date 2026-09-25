@@ -1299,6 +1299,81 @@ def _engineering_quality(obj, target_dims):
     }
 
 
+def _apply_boolean_feature_to_object(base, feature, collection, operation, cleanup=True, index=0):
+    tool = _engineering_feature_object(feature, collection, index)
+    try:
+        active(base.name)
+        mod = base.modifiers.new("AssemblyFeature", "BOOLEAN")
+        mod.operation = operation
+        mod.solver = "EXACT"
+        mod.object = tool
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    finally:
+        if cleanup and tool.name in bpy.data.objects:
+            bpy.data.objects.remove(tool, do_unlink=True)
+
+
+def _apply_assembly_links(spec, objects_by_id, collection, cleanup=True):
+    reports = []
+    for i, link in enumerate(spec.get("assembly_links", []) or []):
+        if link.get("type") != "peg_socket":
+            reports.append({"i": i, "ok": False, "error": "unsupported link type"})
+            continue
+
+        from_id = str(link.get("from", ""))
+        to_id = str(link.get("to", ""))
+        peg_obj = objects_by_id.get(from_id)
+        socket_obj = objects_by_id.get(to_id)
+        if not peg_obj or not socket_obj:
+            reports.append({"i": i, "ok": False, "error": "missing from/to object"})
+            continue
+
+        axis = str(link.get("axis", "Z")).upper()
+        diameter = float(link.get("diameter_mm", 4.0))
+        depth = float(link.get("depth_mm", 6.0))
+        clearance = max(0.0, float(link.get("clearance_mm", 0.25)))
+        from_local = Vector(link.get("from_center_mm", [0, 0, 0]))
+        to_local = Vector(link.get("to_center_mm", [0, 0, 0]))
+
+        peg_feature = {
+            "type": "boss_cylinder",
+            "axis": axis,
+            "center_mm": list(peg_obj.location + from_local),
+            "diameter_mm": diameter,
+            "depth_mm": depth,
+            "segments": int(link.get("segments", 48)),
+        }
+        socket_feature = {
+            "type": "hole_cylinder",
+            "axis": axis,
+            "center_mm": list(socket_obj.location + to_local),
+            "diameter_mm": diameter + 2.0 * clearance,
+            "depth_mm": depth + max(0.5, clearance * 2.0),
+            "segments": int(link.get("segments", 48)),
+        }
+
+        try:
+            _apply_boolean_feature_to_object(
+                peg_obj, peg_feature, collection, "UNION", cleanup=cleanup, index=i*2
+            )
+            _apply_boolean_feature_to_object(
+                socket_obj, socket_feature, collection, "DIFFERENCE", cleanup=cleanup, index=i*2+1
+            )
+            reports.append({
+                "i": i,
+                "ok": True,
+                "type": "peg_socket",
+                "from": from_id,
+                "to": to_id,
+                "diameter_mm": diameter,
+                "clearance_mm": clearance,
+            })
+        except Exception as exc:
+            reports.append({"i": i, "ok": False, "error": str(exc)})
+
+    return reports
+
+
 def reconstruct_blueprint(p):
     spec = p.get("spec", {})
     parts = spec.get("parts", [])
@@ -1321,6 +1396,7 @@ def reconstruct_blueprint(p):
     cleanup = bool(p.get("cleanup", True))
     built = []
     warnings = []
+    objects_by_id = {}
 
     bpy.ops.ed.undo_push(message="Blueprint 2D to 3D reconstruction")
 
@@ -1373,6 +1449,11 @@ def reconstruct_blueprint(p):
         pos = part.get("position_mm", [0, 0, 0])
         if len(pos) == 3:
             base.location = [float(v) for v in pos]
+        rot_deg = part.get("rotation_deg", [0, 0, 0])
+        if isinstance(rot_deg, list) and len(rot_deg) == 3:
+            base.rotation_euler = [math.radians(float(v)) for v in rot_deg]
+
+        objects_by_id[pid] = base
 
         if bevel > 0:
             active(base.name)
@@ -1397,10 +1478,33 @@ def reconstruct_blueprint(p):
     if not built:
         return result(False, error="No parts could be reconstructed", warnings=warnings)
 
+    assembly = _apply_assembly_links(
+        spec,
+        objects_by_id,
+        collection,
+        cleanup=cleanup,
+    )
+
+    # Recompute quality after assembly booleans.
+    for item in built:
+        obj = objects_by_id.get(item["id"])
+        if obj:
+            dims = next(
+                (p0.get("dimensions_mm", {}) for p0 in parts if str(p0.get("id")) == item["id"]),
+                {},
+            )
+            if all(k in dims for k in ("width", "depth", "height")):
+                item["quality"] = _engineering_quality(
+                    obj,
+                    [dims["width"], dims["depth"], dims["height"]],
+                )
+            item["object"] = compact_obj(obj)
+
     return result(
         model_id=spec.get("model_id", "model"),
         built=len(built),
         parts=built[:64],
+        assembly=assembly[:64],
         warnings=warnings,
         collection=cname,
         scene_h=scene_digest(),
