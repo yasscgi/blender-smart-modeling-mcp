@@ -48,8 +48,11 @@ def object_digest(o):
         if o.data.vertices:
             # Tiny deterministic sample; enough for change detection without serializing geometry.
             step = max(1, len(o.data.vertices) // 16)
-            for v in o.data.vertices[::step][:16]:
+            for i in range(0, len(o.data.vertices), step):
+                v = o.data.vertices[i]
                 raw.extend(round(float(c), 4) for c in v.co)
+                if i // step >= 15:
+                    break
     return hashlib.blake2s(repr(raw).encode(), digest_size=6).hexdigest()
 
 
