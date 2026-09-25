@@ -668,7 +668,9 @@ def dispatch(a, p):
         return mesh_edit_batch(p)
     if a == "lathe_profile":
         return op_lathe(p)
-    if a == "loft_sections":\n        return op_loft(p)\n    if a == "curve_tube":
+    if a == "loft_sections":
+        return op_loft(p)
+    if a == "curve_tube":
         return op_curve(p)
     if a == "mesh_validate":
         return validate(p)
