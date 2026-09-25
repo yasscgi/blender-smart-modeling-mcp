@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Smart Modeling MCP",
     "author": "Yasscgi",
-    "version": (0, 4, 1),
+    "version": (0, 5, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Smart MCP",
     "category": "3D View",
@@ -2435,7 +2435,7 @@ class SMARTMCP_PT_panel(bpy.types.Panel):
 
     def draw(self, ctx):
         self.layout.label(text=("Running 127.0.0.1:9877" if _running else "Stopped"))
-        self.layout.label(text="2D Plan Engineer V0.4.1")
+        self.layout.label(text="AI Engineer V0.5")
         if _last_error:
             self.layout.label(text=_last_error[:80], icon="ERROR")
         self.layout.operator("smartmcp.toggle")
