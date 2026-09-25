@@ -1276,7 +1276,13 @@ def _apply_engineering_features(base, features, collection, cleanup=True):
 
 
 def _engineering_quality(obj, target_dims):
-    actual = [float(v) for v in obj.dimensions]
+    if obj.type == "MESH" and len(obj.data.vertices):
+        xs = [float(v.co.x) for v in obj.data.vertices]
+        ys = [float(v.co.y) for v in obj.data.vertices]
+        zs = [float(v.co.z) for v in obj.data.vertices]
+        actual = [max(xs)-min(xs), max(ys)-min(ys), max(zs)-min(zs)]
+    else:
+        actual = [float(v) for v in obj.dimensions]
     target = [float(v) for v in target_dims]
     errors = [
         round(abs(a - t) / t * 100.0, 3) if t > 1e-9 else 0.0
