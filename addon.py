@@ -1062,22 +1062,39 @@ def mesh_edit_batch(p):
 def op_lathe(p):
     pts = p["points"]
     seg = max(3, int(p.get("segments", 64)))
+    if len(pts) < 2:
+        raise ValueError("lathe_profile needs at least 2 profile points")
     verts, faces = [], []
     for i in range(seg):
-        a = 2 * math.pi * i / seg
-        c, s = math.cos(a), math.sin(a)
-        verts += [(r * c, r * s, z) for r, z in pts]
+        angle = 2 * math.pi * i / seg
+        c, s = math.cos(angle), math.sin(angle)
+        verts += [(float(r) * c, float(r) * s, float(z)) for r, z in pts]
+
     n = len(pts)
     for i in range(seg):
         j = (i + 1) % seg
         for k in range(n - 1):
             faces.append((i * n + k, j * n + k, j * n + k + 1, i * n + k + 1))
 
+    if p.get("cap", True):
+        if abs(float(pts[0][0])) > 1e-9:
+            faces.append(tuple(reversed([i * n for i in range(seg)])))
+        if abs(float(pts[-1][0])) > 1e-9:
+            faces.append(tuple(i * n + (n - 1) for i in range(seg)))
+
     me = bpy.data.meshes.new(p["name"] + "Mesh")
     me.from_pydata(verts, [], faces)
     me.update()
     o = bpy.data.objects.new(p["name"], me)
     bpy.context.collection.objects.link(o)
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
     return result(object=compact_obj(o), scene_h=scene_digest())
 
 
@@ -1380,6 +1397,15 @@ def _apply_assembly_links(spec, objects_by_id, collection, cleanup=True):
     return reports
 
 
+def _move_to_collection(obj, collection):
+    if collection not in obj.users_collection:
+        collection.objects.link(obj)
+    for col in list(obj.users_collection):
+        if col != collection:
+            col.objects.unlink(obj)
+    return obj
+
+
 def reconstruct_blueprint(p):
     spec = p.get("spec", {})
     all_parts = spec.get("parts", [])
@@ -1431,28 +1457,76 @@ def reconstruct_blueprint(p):
             warnings.append(pid + ": invalid dimensions")
             continue
 
-        view_defs = [
-            ("front", d, _view_points_mm(part, "front", mode)),
-            ("side", w, _view_points_mm(part, "side", mode)),
-            ("top", h, _view_points_mm(part, "top", mode)),
-        ]
-        usable = [(view, ext, pts) for view, ext, pts in view_defs if len(pts) >= 3]
-        if not usable:
-            warnings.append(pid + ": no usable orthographic silhouettes")
+        strategy = str(part.get("strategy", "orthographic_hull"))
+        views_used = []
+
+        if strategy == "orthographic_hull":
+            view_defs = [
+                ("front", d, _view_points_mm(part, "front", mode)),
+                ("side", w, _view_points_mm(part, "side", mode)),
+                ("top", h, _view_points_mm(part, "top", mode)),
+            ]
+            usable = [(view, ext, pts) for view, ext, pts in view_defs if len(pts) >= 3]
+            if not usable:
+                warnings.append(pid + ": no usable orthographic silhouettes")
+                continue
+
+            view, ext, pts = usable[0]
+            base = _make_prism(pid + "_" + view, view, pts, ext, collection)
+            views_used = [v[0] for v in usable]
+
+            for view, ext, pts in usable[1:]:
+                cutter = _make_prism(pid + "__" + view, view, pts, ext, collection)
+                try:
+                    _boolean_intersect(base, cutter)
+                finally:
+                    if cleanup and cutter.name in bpy.data.objects:
+                        bpy.data.objects.remove(cutter, do_unlink=True)
+
+        elif strategy == "lathe":
+            temp_name = "__" + pid + "_LATHE"
+            op_lathe({
+                "name": temp_name,
+                "points": part.get("profile", []),
+                "segments": int(part.get("segments", 64)),
+                "cap": bool(part.get("cap", True)),
+            })
+            base = bpy.data.objects.get(temp_name)
+            if not base:
+                raise ValueError(pid + ": lathe generation failed")
+            _move_to_collection(base, collection)
+
+        elif strategy == "loft":
+            temp_name = "__" + pid + "_LOFT"
+            op_loft({
+                "name": temp_name,
+                "sections": part.get("sections", []),
+                "cap": bool(part.get("cap", True)),
+            })
+            base = bpy.data.objects.get(temp_name)
+            if not base:
+                raise ValueError(pid + ": loft generation failed")
+            _move_to_collection(base, collection)
+
+        elif strategy == "sweep":
+            temp_name = "__" + pid + "_SWEEP"
+            op_sweep({
+                "name": temp_name,
+                "path": part.get("path", []),
+                "profile": part.get("profile", []),
+                "closed_path": bool(part.get("closed_path", False)),
+                "closed_profile": bool(part.get("closed_profile", True)),
+                "cap": bool(part.get("cap", True)),
+                "up": part.get("up", [0, 0, 1]),
+            })
+            base = bpy.data.objects.get(temp_name)
+            if not base:
+                raise ValueError(pid + ": sweep generation failed")
+            _move_to_collection(base, collection)
+
+        else:
+            warnings.append(pid + ": unsupported strategy " + strategy)
             continue
-
-        view, ext, pts = usable[0]
-        base = _make_prism(pid + "_" + view, view, pts, ext, collection)
-        cutters = []
-
-        for view, ext, pts in usable[1:]:
-            cutter = _make_prism(pid + "__" + view, view, pts, ext, collection)
-            cutters.append(cutter)
-            try:
-                _boolean_intersect(base, cutter)
-            finally:
-                if cleanup and cutter.name in bpy.data.objects:
-                    bpy.data.objects.remove(cutter, do_unlink=True)
 
         base.name = name
         base["smart_mcp_part_id"] = pid
@@ -1492,7 +1566,8 @@ def reconstruct_blueprint(p):
         built.append({
             "id": pid,
             "name": base.name,
-            "views": [v[0] for v in usable],
+            "strategy": strategy,
+            "views": views_used,
             "features": feature_names,
             "quality": quality,
             "object": compact_obj(base),
