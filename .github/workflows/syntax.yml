@@ -23,3 +23,7 @@ jobs:
           r=v(s); assert r['ok'] and r['engineering_ready']"
       - name: Validate example JSON
         run: python -m json.tool examples/engineering_blueprint.json > /dev/null
+      - name: Install package
+        run: python -m pip install .
+      - name: Import package entrypoints
+        run: python -c "import smart_blender_mcp, smart_blender_mcp.server, smart_blender_mcp.compact_server"
