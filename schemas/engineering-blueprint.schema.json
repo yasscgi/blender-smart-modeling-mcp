@@ -1,0 +1,406 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yasscgi/blender-smart-modeling-mcp/schemas/engineering-blueprint.schema.json",
+  "title": "Smart Blender Engineering Blueprint",
+  "type": "object",
+  "required": [
+    "units",
+    "parts"
+  ],
+  "properties": {
+    "model_id": {
+      "type": "string"
+    },
+    "units": {
+      "const": "mm"
+    },
+    "coordinate_mode": {
+      "enum": [
+        "normalized",
+        "mm"
+      ],
+      "default": "normalized"
+    },
+    "overall_dimensions_mm": {
+      "type": "object",
+      "properties": {
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "depth": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "parts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/part"
+      }
+    },
+    "assembly_links": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/assemblyLink"
+      }
+    }
+  },
+  "$defs": {
+    "vec2": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "vec3": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "dims": {
+      "type": "object",
+      "required": [
+        "width",
+        "depth",
+        "height"
+      ],
+      "properties": {
+        "width": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "depth": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "polygon": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/vec2"
+      }
+    },
+    "pattern": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "count",
+            "step_mm"
+          ],
+          "properties": {
+            "type": {
+              "const": "linear"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256
+            },
+            "step_mm": {
+              "$ref": "#/$defs/vec3"
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "count"
+          ],
+          "properties": {
+            "type": {
+              "const": "radial"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 256
+            },
+            "axis": {
+              "enum": [
+                "X",
+                "Y",
+                "Z"
+              ]
+            },
+            "center_mm": {
+              "$ref": "#/$defs/vec3"
+            },
+            "angle_degrees": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "feature": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "hole_cylinder",
+            "boss_cylinder",
+            "cut_box",
+            "boss_box"
+          ]
+        },
+        "axis": {
+          "enum": [
+            "X",
+            "Y",
+            "Z"
+          ]
+        },
+        "center_mm": {
+          "$ref": "#/$defs/vec3"
+        },
+        "diameter_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "depth_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "dimensions_mm": {
+          "$ref": "#/$defs/vec3"
+        },
+        "rotation_deg": {
+          "$ref": "#/$defs/vec3"
+        },
+        "segments": {
+          "type": "integer",
+          "minimum": 12,
+          "maximum": 256
+        },
+        "pattern": {
+          "$ref": "#/$defs/pattern"
+        }
+      },
+      "additionalProperties": true
+    },
+    "section": {
+      "type": "object",
+      "required": [
+        "z",
+        "points"
+      ],
+      "properties": {
+        "z": {
+          "type": "number"
+        },
+        "points": {
+          "$ref": "#/$defs/polygon"
+        }
+      },
+      "additionalProperties": false
+    },
+    "part": {
+      "type": "object",
+      "required": [
+        "id",
+        "dimensions_mm"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "strategy": {
+          "enum": [
+            "orthographic_hull",
+            "lathe",
+            "loft",
+            "sweep"
+          ],
+          "default": "orthographic_hull"
+        },
+        "dimensions_mm": {
+          "$ref": "#/$defs/dims"
+        },
+        "position_mm": {
+          "$ref": "#/$defs/vec3"
+        },
+        "rotation_deg": {
+          "$ref": "#/$defs/vec3"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "dimension_tolerance": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "views": {
+          "type": "object",
+          "properties": {
+            "front": {
+              "$ref": "#/$defs/polygon"
+            },
+            "side": {
+              "$ref": "#/$defs/polygon"
+            },
+            "top": {
+              "$ref": "#/$defs/polygon"
+            },
+            "back": {
+              "$ref": "#/$defs/polygon"
+            },
+            "left": {
+              "$ref": "#/$defs/polygon"
+            },
+            "right": {
+              "$ref": "#/$defs/polygon"
+            },
+            "bottom": {
+              "$ref": "#/$defs/polygon"
+            }
+          },
+          "additionalProperties": false
+        },
+        "profile": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/vec2"
+          }
+        },
+        "sections": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/section"
+          }
+        },
+        "path": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/vec3"
+          }
+        },
+        "closed_path": {
+          "type": "boolean"
+        },
+        "closed_profile": {
+          "type": "boolean"
+        },
+        "cap": {
+          "type": "boolean"
+        },
+        "up": {
+          "$ref": "#/$defs/vec3"
+        },
+        "segments": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 512
+        },
+        "features": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/feature"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "assemblyLink": {
+      "type": "object",
+      "required": [
+        "type",
+        "from",
+        "to"
+      ],
+      "properties": {
+        "type": {
+          "const": "peg_socket"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "axis": {
+          "enum": [
+            "X",
+            "Y",
+            "Z"
+          ]
+        },
+        "from_center_mm": {
+          "$ref": "#/$defs/vec3"
+        },
+        "to_center_mm": {
+          "$ref": "#/$defs/vec3"
+        },
+        "diameter_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "depth_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "clearance_mm": {
+          "type": "number",
+          "minimum": 0
+        },
+        "segments": {
+          "type": "integer",
+          "minimum": 12,
+          "maximum": 256
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}
