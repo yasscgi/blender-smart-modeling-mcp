@@ -1651,6 +1651,137 @@ def setup_engineering_cameras(p):
     return result(cameras=names, center=_round3(center), scene_h=scene_digest())
 
 
+def _engineering_targets(part_ids):
+    wanted = {str(v) for v in (part_ids or [])}
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    if not wanted:
+        generated = [o for o in meshes if o.get("smart_mcp_part_id")]
+        return generated or meshes
+    return [o for o in meshes if str(o.get("smart_mcp_part_id", "")) in wanted]
+
+
+def _world_bounds(objects):
+    points = []
+    for obj in objects:
+        for corner in obj.bound_box:
+            points.append(obj.matrix_world @ Vector(corner))
+    if not points:
+        raise ValueError("No mesh objects available for engineering preview")
+    lo = Vector((
+        min(p.x for p in points),
+        min(p.y for p in points),
+        min(p.z for p in points),
+    ))
+    hi = Vector((
+        max(p.x for p in points),
+        max(p.y for p in points),
+        max(p.z for p in points),
+    ))
+    return lo, hi
+
+
+def engineering_contact_sheet(p):
+    size = max(128, min(int(p.get("size", 384)), 1024))
+    targets = _engineering_targets(p.get("part_ids", []))
+    lo, hi = _world_bounds(targets)
+    center = (lo + hi) * 0.5
+    dims = hi - lo
+
+    setup_engineering_cameras({
+        "dimensions_mm": {
+            "width": max(float(dims.x), 1.0),
+            "depth": max(float(dims.y), 1.0),
+            "height": max(float(dims.z), 1.0),
+        },
+        "center_mm": list(center),
+        "margin": float(p.get("margin", 1.15)),
+    })
+
+    scene = bpy.context.scene
+    old_camera = scene.camera
+    old_x = scene.render.resolution_x
+    old_y = scene.render.resolution_y
+    old_pct = scene.render.resolution_percentage
+    old_filepath = scene.render.filepath
+
+    hidden = {}
+    if p.get("part_ids"):
+        target_set = set(targets)
+        for obj in scene.objects:
+            if obj.type == "MESH":
+                hidden[obj.name] = obj.hide_render
+                obj.hide_render = obj not in target_set
+
+    layout = [
+        ("Front", 0, 1),
+        ("Back", 1, 1),
+        ("Left", 2, 1),
+        ("Right", 0, 0),
+        ("Top", 1, 0),
+        ("Bottom", 2, 0),
+    ]
+    sheet_w, sheet_h = size * 3, size * 2
+    sheet_pixels = [0.0] * (sheet_w * sheet_h * 4)
+
+    try:
+        scene.render.resolution_x = size
+        scene.render.resolution_y = size
+        scene.render.resolution_percentage = 100
+
+        for label, tile_x, tile_y in layout:
+            cam = bpy.data.objects.get("ENG_" + label)
+            if not cam or cam.type != "CAMERA":
+                raise ValueError("Missing engineering camera: " + label)
+            scene.camera = cam
+            bpy.ops.render.render()
+            rr = bpy.data.images.get("Render Result")
+            if rr is None:
+                raise RuntimeError("Render Result unavailable")
+            src = list(rr.pixels[:])
+            row_len = size * 4
+            for row in range(size):
+                s0 = row * row_len
+                d0 = ((tile_y * size + row) * sheet_w + tile_x * size) * 4
+                sheet_pixels[d0:d0 + row_len] = src[s0:s0 + row_len]
+
+        old_sheet = bpy.data.images.get("__SMART_ENGINEERING_SHEET__")
+        if old_sheet:
+            bpy.data.images.remove(old_sheet)
+
+        sheet = bpy.data.images.new(
+            "__SMART_ENGINEERING_SHEET__",
+            width=sheet_w,
+            height=sheet_h,
+            alpha=True,
+            float_buffer=False,
+        )
+        sheet.pixels.foreach_set(sheet_pixels)
+        sheet.update()
+        path = bpy.path.abspath("//smart_engineering_sheet.png")
+        sheet.filepath_raw = path
+        sheet.file_format = "PNG"
+        sheet.save()
+
+        return result(
+            path=path,
+            width=sheet_w,
+            height=sheet_h,
+            tile_size=size,
+            layout=[x[0] for x in layout],
+            parts=[str(o.get("smart_mcp_part_id", o.name)) for o in targets][:64],
+            scene_h=scene_digest(),
+        )
+    finally:
+        scene.camera = old_camera
+        scene.render.resolution_x = old_x
+        scene.render.resolution_y = old_y
+        scene.render.resolution_percentage = old_pct
+        scene.render.filepath = old_filepath
+        for name, state in hidden.items():
+            obj = bpy.data.objects.get(name)
+            if obj:
+                obj.hide_render = state
+
 def validate(p):
     o = active(p.get("name", ""))
     if o.type != "MESH":
@@ -1780,6 +1911,8 @@ def dispatch(a, p):
         return reconstruct_blueprint(p)
     if a == "setup_engineering_cameras":
         return setup_engineering_cameras(p)
+    if a == "engineering_contact_sheet":
+        return engineering_contact_sheet(p)
     if a == "scene_state":
         h = scene_digest()
         if p.get("changed_since") and p["changed_since"] == h:
