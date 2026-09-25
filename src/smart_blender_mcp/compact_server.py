@@ -13,6 +13,7 @@ mcp = FastMCP("Smart Blender Compact")
 HOST, PORT = "127.0.0.1", 9877
 _BLUEPRINT_CACHE: dict[str, dict] = {}
 _METRICS = {"calls": 0, "tx_bytes": 0, "rx_bytes": 0, "seconds": 0.0}
+_VISUAL_BUDGET = {"used": 0, "max": 1}
 
 
 def _recv(s: socket.socket, n: int) -> bytes:
@@ -182,15 +183,18 @@ def _engineer_run(item: dict) -> dict:
     avg_fit = round(sum(fit_values) / len(fit_values), 4) if fit_values else None
     avg_dim = round(sum(x["dim_err_pct"] for x in checks) / total, 3) if total else None
 
+    failed_ids = [x["id"] for x in checks if not x.get("ok")]
     response = {
         "ok": passed == total and total > 0,
         "blueprint_id": bid,
         "parts": total,
         "passed": passed,
         "failed": total - passed,
+        "failed_ids": failed_ids,
         "avg_fit": avg_fit,
         "avg_dim_err_pct": avg_dim,
         "checks": checks,
+        "next": "preview_once" if passed == total and total > 0 else "patch_failed_parts",
         "scene_h": build.get("scene_h"),
         "metrics": _metrics_delta(before),
     }
@@ -207,7 +211,7 @@ def state(changed_since: str = "") -> dict:
 
 @mcp.tool()
 def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
-    """Compact inspection: topology/faces/edges, cache or patch a blueprint, or score silhouette fit."""
+    """Low-token numeric inspection. Prefer fit_batch/engineer reports over visual previews."""
     if kind == "topology":
         return _call("topology_state", name=name)
     if kind == "faces":
@@ -243,6 +247,54 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
             part_id=part_id,
             resolution=max(24, min(int(selector.get("resolution", 64)), 160)),
         )
+
+    if kind == "fit_batch":
+        if not isinstance(selector, dict):
+            raise ValueError("fit_batch selector requires blueprint_id")
+        bid = str(selector.get("blueprint_id", ""))
+        spec = _BLUEPRINT_CACHE.get(bid)
+        if spec is None:
+            raise ValueError("Unknown blueprint_id")
+        wanted = {str(x) for x in selector.get("part_ids", [])}
+        resolution = max(24, min(int(selector.get("resolution", 48)), 128))
+        rows = []
+        for part in spec.get("parts", []):
+            pid = str(part.get("id", ""))
+            if wanted and pid not in wanted:
+                continue
+            views = part.get("views", {}) if isinstance(part.get("views", {}), dict) else {}
+            if not any(isinstance(views.get(v), list) and len(views.get(v)) >= 3 for v in ("front", "side", "top")):
+                continue
+            fit = _call(
+                "silhouette_fit",
+                part=part,
+                coordinate_mode=spec.get("coordinate_mode", "normalized"),
+                part_id=pid,
+                resolution=resolution,
+            )
+            if not fit.get("ok"):
+                rows.append({"id": pid, "ok": False, "error": fit.get("error", "fit failed")})
+                continue
+            view_scores = {
+                name: float(data.get("iou", 0.0))
+                for name, data in fit.get("views", {}).items()
+            }
+            worst_view = min(view_scores, key=view_scores.get) if view_scores else None
+            rows.append({
+                "id": pid,
+                "ok": True,
+                "fit": round(float(fit.get("mean_iou", 0.0)), 4),
+                "worst": worst_view,
+                "worst_iou": round(view_scores[worst_view], 4) if worst_view else None,
+            })
+        good = [r for r in rows if r.get("ok")]
+        return {
+            "ok": bool(rows) and all(r.get("ok") for r in rows),
+            "blueprint_id": bid,
+            "count": len(rows),
+            "avg_fit": round(sum(r["fit"] for r in good) / len(good), 4) if good else None,
+            "parts": rows,
+        }
 
     if kind == "blueprint_patch":
         if not isinstance(selector, dict):
@@ -292,7 +344,7 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
     if kind == "metrics":
         return {"ok": True, **_metrics_snapshot()}
 
-    raise ValueError("kind must be topology, faces, edges, fit, blueprint, blueprint_patch, plan, or metrics")
+    raise ValueError("kind must be topology, faces, edges, fit, fit_batch, blueprint, blueprint_patch, plan, or metrics")
 
 
 @mcp.tool()
@@ -343,18 +395,34 @@ def model(
 def preview(
     width: int = 512,
     height: int = 512,
-    mode: str = "single",
+    mode: str = "engineering",
     part_ids: list[str] | None = None,
+    force: bool = False,
 ) -> dict:
-    """Render a visual checkpoint.
-    mode='engineering' packs Front/Back/Left/Right/Top/Bottom into one image."""
+    """EXPENSIVE visual checkpoint. Use only after numeric engineer/fit checks.
+    By default only one preview is allowed per MCP process. Use force=true only
+    for an intentional extra visual checkpoint."""
+    if _VISUAL_BUDGET["used"] >= _VISUAL_BUDGET["max"] and not force:
+        return {
+            "ok": False,
+            "error": "visual_budget_exceeded",
+            "used": _VISUAL_BUDGET["used"],
+            "max": _VISUAL_BUDGET["max"],
+            "hint": "Use inspect(kind='fit_batch') or model(do='engineer') instead of another image.",
+        }
+
+    _VISUAL_BUDGET["used"] += 1
     if mode == "engineering":
-        return _call(
+        out = _call(
             "engineering_contact_sheet",
-            size=max(128, min(width, height, 1024)),
+            size=max(128, min(width, height, 768)),
             part_ids=part_ids or [],
         )
-    return _call("viewport_snapshot", width=width, height=height)
+    else:
+        out = _call("viewport_snapshot", width=min(width, 768), height=min(height, 768))
+    if isinstance(out, dict):
+        out["visual_budget"] = dict(_VISUAL_BUDGET)
+    return out
 
 
 def main() -> None:
