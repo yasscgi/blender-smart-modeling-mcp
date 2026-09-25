@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Smart Modeling MCP",
     "author": "Yasscgi",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > Smart MCP",
     "category": "3D View",
@@ -1143,6 +1143,200 @@ def op_curve(p):
     return result(object=compact_obj(o), scene_h=scene_digest())
 
 
+def _view_points_mm(part, view, mode):
+    pts = part.get("views", {}).get(view, [])
+    if not pts:
+        return []
+    dims = part["dimensions_mm"]
+    w = float(dims["width"])
+    d = float(dims["depth"])
+    h = float(dims["height"])
+    if mode == "mm":
+        return [[float(x), float(y)] for x, y in pts]
+    if view == "front":
+        return [[(float(u)-0.5)*w, (float(v)-0.5)*h] for u, v in pts]
+    if view == "side":
+        return [[(float(u)-0.5)*d, (float(v)-0.5)*h] for u, v in pts]
+    if view == "top":
+        return [[(float(u)-0.5)*w, (float(v)-0.5)*d] for u, v in pts]
+    return []
+
+
+def _make_prism(name, view, points, extent, collection):
+    if len(points) < 3:
+        raise ValueError(view + " silhouette requires at least 3 points")
+    half = float(extent) * 0.55
+    verts = []
+    for layer in (-half, half):
+        for a, b in points:
+            if view == "front":
+                verts.append((a, layer, b))
+            elif view == "side":
+                verts.append((layer, a, b))
+            elif view == "top":
+                verts.append((a, b, layer))
+            else:
+                raise ValueError("Unsupported orthographic view: " + view)
+
+    n = len(points)
+    faces = [tuple(reversed(range(n))), tuple(range(n, 2*n))]
+    for i in range(n):
+        j = (i + 1) % n
+        faces.append((i, j, n+j, n+i))
+
+    me = bpy.data.meshes.new(name + "Mesh")
+    me.from_pydata(verts, [], faces)
+    me.update()
+    obj = bpy.data.objects.new(name, me)
+    collection.objects.link(obj)
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    return obj
+
+
+def _boolean_intersect(base, cutter):
+    active(base.name)
+    mod = base.modifiers.new("PlanIntersect", "BOOLEAN")
+    mod.operation = "INTERSECT"
+    mod.solver = "EXACT"
+    mod.object = cutter
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+
+def reconstruct_blueprint(p):
+    spec = p.get("spec", {})
+    parts = spec.get("parts", [])
+    if not parts:
+        return result(False, error="Blueprint contains no parts")
+
+    scene = bpy.context.scene
+    scene.unit_settings.system = "METRIC"
+    scene.unit_settings.scale_length = 0.001
+    scene.unit_settings.length_unit = "MILLIMETERS"
+
+    cname = p.get("collection_name", "Blueprint_Reconstruction")
+    collection = bpy.data.collections.get(cname)
+    if collection is None:
+        collection = bpy.data.collections.new(cname)
+        scene.collection.children.link(collection)
+
+    mode = spec.get("coordinate_mode", "normalized")
+    bevel = max(0.0, float(p.get("bevel_mm", 0.0)))
+    cleanup = bool(p.get("cleanup", True))
+    built = []
+    warnings = []
+
+    bpy.ops.ed.undo_push(message="Blueprint 2D to 3D reconstruction")
+
+    for idx, part in enumerate(parts):
+        pid = str(part.get("id") or f"P{idx+1:02d}")
+        name = str(part.get("name") or pid)
+        dims = part.get("dimensions_mm", {})
+        try:
+            w = float(dims["width"]); d = float(dims["depth"]); h = float(dims["height"])
+        except Exception:
+            warnings.append(pid + ": invalid dimensions")
+            continue
+
+        view_defs = [
+            ("front", d, _view_points_mm(part, "front", mode)),
+            ("side", w, _view_points_mm(part, "side", mode)),
+            ("top", h, _view_points_mm(part, "top", mode)),
+        ]
+        usable = [(view, ext, pts) for view, ext, pts in view_defs if len(pts) >= 3]
+        if not usable:
+            warnings.append(pid + ": no usable orthographic silhouettes")
+            continue
+
+        view, ext, pts = usable[0]
+        base = _make_prism(pid + "_" + view, view, pts, ext, collection)
+        cutters = []
+
+        for view, ext, pts in usable[1:]:
+            cutter = _make_prism(pid + "__" + view, view, pts, ext, collection)
+            cutters.append(cutter)
+            try:
+                _boolean_intersect(base, cutter)
+            finally:
+                if cleanup and cutter.name in bpy.data.objects:
+                    bpy.data.objects.remove(cutter, do_unlink=True)
+
+        base.name = name
+        pos = part.get("position_mm", [0, 0, 0])
+        if len(pos) == 3:
+            base.location = [float(v) for v in pos]
+
+        if bevel > 0:
+            active(base.name)
+            mod = base.modifiers.new("EngineeringBevel", "BEVEL")
+            mod.width = bevel
+            mod.segments = max(1, int(part.get("bevel_segments", 2)))
+
+        if bool(part.get("smooth", False)):
+            for poly in base.data.polygons:
+                poly.use_smooth = True
+
+        built.append({
+            "id": pid,
+            "name": base.name,
+            "views": [v[0] for v in usable],
+            "object": compact_obj(base),
+        })
+
+    if not built:
+        return result(False, error="No parts could be reconstructed", warnings=warnings)
+
+    return result(
+        model_id=spec.get("model_id", "model"),
+        built=len(built),
+        parts=built[:64],
+        warnings=warnings,
+        collection=cname,
+        scene_h=scene_digest(),
+    )
+
+
+def setup_engineering_cameras(p):
+    dims = p.get("dimensions_mm", {})
+    w = float(dims.get("width", 100))
+    d = float(dims.get("depth", 100))
+    h = float(dims.get("height", 100))
+    center = Vector(p.get("center_mm", [0, 0, 0]))
+    margin = max(1.0, float(p.get("margin", 1.15)))
+    dist = max(w, d, h) * 2.5 + 1.0
+
+    specs = {
+        "Front": (Vector((0, -dist, 0)), max(w, h)),
+        "Back": (Vector((0, dist, 0)), max(w, h)),
+        "Left": (Vector((-dist, 0, 0)), max(d, h)),
+        "Right": (Vector((dist, 0, 0)), max(d, h)),
+        "Top": (Vector((0, 0, dist)), max(w, d)),
+        "Bottom": (Vector((0, 0, -dist)), max(w, d)),
+    }
+
+    names = []
+    for label, (offset, scale) in specs.items():
+        cam_name = "ENG_" + label
+        cam_obj = bpy.data.objects.get(cam_name)
+        if cam_obj is None or cam_obj.type != "CAMERA":
+            cam_data = bpy.data.cameras.new(cam_name + "_Camera")
+            cam_obj = bpy.data.objects.new(cam_name, cam_data)
+            bpy.context.scene.collection.objects.link(cam_obj)
+        cam_obj.location = center + offset
+        direction = center - cam_obj.location
+        cam_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+        cam_obj.data.type = "ORTHO"
+        cam_obj.data.ortho_scale = scale * margin
+        names.append(cam_name)
+
+    return result(cameras=names, center=_round3(center), scene_h=scene_digest())
+
+
 def validate(p):
     o = active(p.get("name", ""))
     if o.type != "MESH":
@@ -1213,6 +1407,10 @@ def smart_batch(p):
                 out = op_curve(payload)
             elif kind == "radial":
                 out = op_radial_array(payload)
+            elif kind == "orthographic":
+                out = reconstruct_blueprint(payload)
+            elif kind == "cameras":
+                out = setup_engineering_cameras(payload)
             elif kind == "validate":
                 out = validate(payload)
             else:
@@ -1264,6 +1462,10 @@ def smart_batch(p):
 def dispatch(a, p):
     if a == "smart_batch":
         return smart_batch(p)
+    if a == "reconstruct_blueprint":
+        return reconstruct_blueprint(p)
+    if a == "setup_engineering_cameras":
+        return setup_engineering_cameras(p)
     if a == "scene_state":
         h = scene_digest()
         if p.get("changed_since") and p["changed_since"] == h:
@@ -1412,7 +1614,7 @@ class SMARTMCP_PT_panel(bpy.types.Panel):
 
     def draw(self, ctx):
         self.layout.label(text=("Running :9877" if _running else "Stopped"))
-        self.layout.label(text="Advanced Topology V0.3")
+        self.layout.label(text="2D Plan Engineer V0.4")
         self.layout.operator("smartmcp.toggle")
 
 
