@@ -207,12 +207,44 @@ def validate_blueprint_spec(spec: dict) -> dict:
             "reconstructability": round(reconstructability, 3),
         })
 
+    valid_ids = {p["id"] for p in parts_out}
+    links = spec.get("assembly_links", []) or []
+    if not isinstance(links, list):
+        errors.append("assembly_links must be a list")
+        links = []
+    valid_links = 0
+    for li, link in enumerate(links):
+        if not isinstance(link, dict):
+            errors.append(f"assembly_links[{li}] must be an object")
+            continue
+        ltype = link.get("type")
+        if ltype != "peg_socket":
+            warnings.append(f"assembly_links[{li}]: unsupported type {ltype!r}")
+            continue
+        if str(link.get("from", "")) not in valid_ids or str(link.get("to", "")) not in valid_ids:
+            errors.append(f"assembly_links[{li}]: from/to must reference existing part ids")
+            continue
+        try:
+            diameter = float(link.get("diameter_mm", 0))
+            depth = float(link.get("depth_mm", 0))
+            clearance = float(link.get("clearance_mm", 0.25))
+            if diameter <= 0 or depth <= 0 or clearance < 0:
+                raise ValueError
+        except Exception:
+            errors.append(f"assembly_links[{li}]: invalid diameter/depth/clearance")
+            continue
+        if str(link.get("axis", "Z")).upper() not in {"X", "Y", "Z"}:
+            errors.append(f"assembly_links[{li}]: axis must be X/Y/Z")
+            continue
+        valid_links += 1
+
     return {
         "ok": not errors,
         "errors": errors,
         "warnings": warnings,
         "parts": parts_out,
         "part_count": len(parts_out),
+        "assembly_links": valid_links,
         "engineering_ready": (not errors) and all(p["reconstructability"] >= 0.65 for p in parts_out),
         "avg_reconstructability": round(
             sum(p["reconstructability"] for p in parts_out) / len(parts_out), 3
