@@ -2285,7 +2285,7 @@ def client(c):
         evt = threading.Event()
         box = {}
         _requests.put((req, evt, box))
-        evt.wait(60)
+        evt.wait(300)
         raw = json.dumps(
             box.get("v", result(False, error="timeout")),
             separators=(",", ":"),
