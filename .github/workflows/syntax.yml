@@ -13,4 +13,4 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile Python sources
-        run: python -m py_compile addon.py src/smart_blender_mcp/server.py
+        run: python -m py_compile addon.py src/smart_blender_mcp/server.py src/smart_blender_mcp/compact_server.py
