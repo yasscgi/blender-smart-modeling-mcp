@@ -130,8 +130,20 @@ def model(
 
 
 @mcp.tool()
-def preview(width: int = 512, height: int = 512) -> dict:
-    """Render one visual checkpoint."""
+def preview(
+    width: int = 512,
+    height: int = 512,
+    mode: str = "single",
+    part_ids: list[str] | None = None,
+) -> dict:
+    """Render a visual checkpoint.
+    mode='engineering' packs Front/Back/Left/Right/Top/Bottom into one image."""
+    if mode == "engineering":
+        return _call(
+            "engineering_contact_sheet",
+            size=max(128, min(width, height, 1024)),
+            part_ids=part_ids or [],
+        )
     return _call("viewport_snapshot", width=width, height=height)
 
 
