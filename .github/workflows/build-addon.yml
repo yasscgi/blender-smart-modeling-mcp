@@ -22,11 +22,11 @@ jobs:
           mkdir -p dist/smart_modeling_mcp
           cp addon.py dist/smart_modeling_mcp/__init__.py
           cat > dist/smart_modeling_mcp/README.txt <<'EOF'
-          Smart Modeling MCP v0.5.0 — AI Engineer
+          Smart Modeling MCP v0.5.1 — AI Engineer
 
           Blender side:
           1. Blender > Edit > Preferences > Add-ons.
-          2. Install from Disk and choose Smart_Modeling_MCP_v0.5.0.zip.
+          2. Install from Disk and choose Smart_Modeling_MCP_v0.5.1.zip.
           3. Enable "Smart Modeling MCP".
           4. 3D View > N panel > Smart MCP.
           5. Press "Run Self Test".
@@ -41,11 +41,11 @@ jobs:
 
           The server intentionally pins MCP SDK v1 (<2) in this release.
           EOF
-          (cd dist && zip -r Smart_Modeling_MCP_v0.5.0.zip smart_modeling_mcp)
+          (cd dist && zip -r Smart_Modeling_MCP_v0.5.1.zip smart_modeling_mcp)
 
       - name: Upload Blender add-on ZIP
         uses: actions/upload-artifact@v4
         with:
-          name: Smart_Modeling_MCP_v0.5.0
-          path: dist/Smart_Modeling_MCP_v0.5.0.zip
+          name: Smart_Modeling_MCP_v0.5.1
+          path: dist/Smart_Modeling_MCP_v0.5.1.zip
           retention-days: 30
