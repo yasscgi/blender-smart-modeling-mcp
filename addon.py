@@ -496,11 +496,95 @@ def _edge_matches(edge, selector, lo, hi):
     return True
 
 
+def _edge_mid(e):
+    return (e.verts[0].co + e.verts[1].co) * 0.5
+
+
+def _edge_ring(seed):
+    found = {seed}
+    stack = [seed]
+    while stack:
+        edge = stack.pop()
+        for face in edge.link_faces:
+            if len(face.edges) != 4:
+                continue
+            opp = None
+            ev = set(edge.verts)
+            for candidate in face.edges:
+                if candidate is edge:
+                    continue
+                if not ev.intersection(candidate.verts):
+                    opp = candidate
+                    break
+            if opp is not None and opp not in found:
+                found.add(opp)
+                stack.append(opp)
+    return list(found)
+
+
+def _edge_loop(seed):
+    found = {seed}
+
+    def walk(start_vertex, first_edge):
+        current_v = start_vertex
+        current_e = first_edge
+        direction = (current_e.other_vert(current_v).co - current_v.co)
+        if direction.length < 1e-12:
+            return
+        direction.normalize()
+
+        while True:
+            candidates = [e for e in current_v.link_edges if e is not current_e and e not in found]
+            if not candidates:
+                return
+            scored = []
+            for e in candidates:
+                d = e.other_vert(current_v).co - current_v.co
+                if d.length < 1e-12:
+                    continue
+                d.normalize()
+                scored.append((abs(direction.dot(d)), e, d))
+            if not scored:
+                return
+            score, nxt, nxt_dir = max(scored, key=lambda item: item[0])
+            if score < 0.55:
+                return
+            found.add(nxt)
+            current_v = nxt.other_vert(current_v)
+            current_e = nxt
+            direction = nxt_dir
+            if current_v in seed.verts:
+                return
+
+    walk(seed.verts[0], seed)
+    walk(seed.verts[1], seed)
+    return list(found)
+
+
 def _select_edges(bm, selector):
     bm.edges.ensure_lookup_table()
     bm.edges.index_update()
     lo, hi = _bm_bounds(bm)
-    return [e for e in bm.edges if _edge_matches(e, selector or {}, lo, hi)]
+
+    selector = dict(selector or {})
+    nearest = selector.pop("nearest", None)
+    expand = selector.pop("expand", None)
+    edges = [e for e in bm.edges if _edge_matches(e, selector, lo, hi)]
+
+    if nearest is not None and edges:
+        p = Vector(nearest)
+        edges = [min(edges, key=lambda e: (_edge_mid(e) - p).length_squared)]
+
+    if expand and edges:
+        seed = edges[0]
+        if expand == "ring":
+            edges = _edge_ring(seed)
+        elif expand == "loop":
+            edges = _edge_loop(seed)
+        else:
+            raise ValueError("Unknown edge expansion: " + str(expand))
+
+    return edges
 
 
 def _edge_center(edges):
@@ -586,6 +670,52 @@ def edge_query(p):
         out["edge_ids"] = ids[:cap]
         out["truncated"] = len(ids) > cap
 
+    bm.free()
+    return out
+
+
+def topology_state(p):
+    o = active(p.get("name", ""))
+    if o.type != "MESH":
+        return result(False, error="Not a mesh")
+
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bm.normal_update()
+
+    tris = sum(1 for f in bm.faces if len(f.verts) == 3)
+    quads = sum(1 for f in bm.faces if len(f.verts) == 4)
+    ngons = sum(1 for f in bm.faces if len(f.verts) > 4)
+    nonman = sum(1 for e in bm.edges if not e.is_manifold)
+    boundary_edges = sum(1 for e in bm.edges if e.is_boundary)
+    poles3 = sum(1 for v in bm.verts if len(v.link_edges) == 3)
+    poles5 = sum(1 for v in bm.verts if len(v.link_edges) >= 5)
+
+    loops = []
+    for comp in _boundary_components(bm):
+        loops.append({
+            "e": len(comp),
+            "c": _round3(_edge_center(comp)),
+            "len": round(sum(e.calc_length() for e in comp), 5),
+        })
+    loops.sort(key=lambda x: (x["c"][2], x["c"][1], x["c"][0]))
+
+    out = result(
+        name=o.name,
+        v=len(bm.verts),
+        e=len(bm.edges),
+        f=len(bm.faces),
+        tri=tris,
+        quad=quads,
+        ngon=ngons,
+        boundary_e=boundary_edges,
+        boundary_loops=loops[:16],
+        boundary_loop_count=len(loops),
+        nonmanifold=nonman,
+        valence3=poles3,
+        valence5plus=poles5,
+        object_h=object_digest(o),
+    )
     bm.free()
     return out
 
@@ -1069,6 +1199,8 @@ def dispatch(a, p):
         return mesh_edit_batch(p)
     if a == "edge_query":
         return edge_query(p)
+    if a == "topology_state":
+        return topology_state(p)
     if a == "topology_batch":
         return topology_batch(p)
     if a == "sweep_profile":
