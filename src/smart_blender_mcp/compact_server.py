@@ -47,13 +47,19 @@ def inspect(kind: str, name: str = "", selector: dict | None = None) -> dict:
 
 
 @mcp.tool()
-def model(steps: list[dict], checkpoint: bool = True, return_steps: bool = False) -> dict:
+def model(
+    steps: list[dict],
+    checkpoint: bool = True,
+    rollback_on_error: bool = True,
+    return_steps: bool = False,
+) -> dict:
     """Run a mixed modeling plan in one call.
     step do: create, object, mesh, topology, lathe, loft, sweep, curve, radial, validate."""
     return _call(
         "smart_batch",
         steps=steps,
         checkpoint=checkpoint,
+        rollback_on_error=rollback_on_error,
         return_steps=return_steps,
     )
 
