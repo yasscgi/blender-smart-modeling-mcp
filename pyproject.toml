@@ -7,7 +7,8 @@ dependencies = ["mcp>=1.2.0,<2"]
 
 [project.scripts]
 blender-smart-mcp = "smart_blender_mcp.server:main"
-blender-smart-mcp-compact = "smart_blender_mcp.compact_server:main"\nblender-smart-benchmark = "smart_blender_mcp.benchmark:main"
+blender-smart-mcp-compact = "smart_blender_mcp.compact_server:main"
+blender-smart-benchmark = "smart_blender_mcp.benchmark:main"
 
 [build-system]
 requires = ["hatchling"]
