@@ -124,6 +124,8 @@ def edge_query(
       {"bbox":{"x":[0,1],"y":[0,1],"z":[0.8,1]}}
       {"orientation":{"axis":"Z","min_dot":0.8}}
       {"edge_ids":[1,2,3]}
+      {"nearest":[x,y,z]} to collapse a broad selector to one seed edge
+      {"expand":"ring|loop"} to grow that seed locally inside Blender
       {"all":[...]} or {"any":[...]}
 
     IDs are omitted by default to keep responses small."""
@@ -134,6 +136,13 @@ def edge_query(
         include_ids=include_ids,
         max_ids=max_ids,
     )
+
+
+@mcp.tool()
+def topology_state(name: str = "") -> dict:
+    """Return compact topology intelligence without vertex dumps:
+    tris/quads/ngons, boundary-loop summaries, pole counts and manifold counts."""
+    return call("topology_state", name=name)
 
 
 @mcp.tool()
@@ -158,6 +167,7 @@ def sweep_profile(
     path: list[list[float]],
     profile: list[list[float]],
     closed_path: bool = False,
+    closed_profile: bool = True,
     cap: bool = True,
     up: list[float] | None = None,
 ) -> dict:
@@ -169,6 +179,7 @@ def sweep_profile(
         path=path,
         profile=profile,
         closed_path=closed_path,
+        closed_profile=closed_profile,
         cap=cap,
         up=up or [0, 0, 1],
     )
