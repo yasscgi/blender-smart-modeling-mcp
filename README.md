@@ -317,6 +317,111 @@ Use `do:"cameras"` to create six orthographic engineering cameras for Front/Back
 
 See `docs/REFERENCE_BLUEPRINT.md` and `examples/engineering_blueprint.json`.
 
+## V0.4.1 — Engineer loop with almost no repeated context
+
+The compact server keeps the Blueprint Manifest in memory.
+
+1. Send the master manifest once:
+
+```text
+inspect(kind="blueprint", selector=<manifest>)
+→ blueprint_id
+```
+
+2. Reconstruct all parts without resending the plan:
+
+```json
+{
+  "steps": [
+    {
+      "do": "orthographic",
+      "blueprint_id": "<id>",
+      "collection_name": "Product"
+    }
+  ]
+}
+```
+
+3. Score one part directly against its cached Front/Side/Top plans:
+
+```text
+inspect(
+  kind="fit",
+  name="P07",
+  selector={"blueprint_id":"<id>","resolution":64}
+)
+```
+
+The fit result is a compact IoU score per view instead of another image.
+
+4. Patch only the failing part:
+
+```json
+{
+  "blueprint_id": "<id>",
+  "part_id": "P07",
+  "changes": {
+    "dimensions_mm": {"depth": 42},
+    "views": {"side": [[0.1,0.0],[0.9,0.0],[0.8,1.0],[0.2,1.0]]}
+  }
+}
+```
+
+Call this through `inspect(kind="blueprint_patch", selector=...)`. It returns a new `blueprint_id`.
+
+5. Rebuild only P07:
+
+```json
+{
+  "steps": [
+    {
+      "do": "orthographic",
+      "blueprint_id": "<new-id>",
+      "part_ids": ["P07"],
+      "replace_existing": true
+    }
+  ]
+}
+```
+
+### Per-part engineering strategies
+
+A single blueprint may mix:
+
+- `orthographic_hull` — Front/Side/Top silhouette intersection
+- `lathe` — rotational product parts from radius/Z profiles
+- `loft` — shape through multiple cross-sections
+- `sweep` — handles, rails, trims and tubing from path + profile
+
+The AI should choose the simplest strategy that preserves the design intent.
+
+### Repeated detail without repeated tokens
+
+Engineering features support local patterns. Example: one hole definition can create a full bolt circle:
+
+```json
+{
+  "type":"hole_cylinder",
+  "axis":"Z",
+  "center_mm":[32,0,0],
+  "diameter_mm":4,
+  "depth_mm":10,
+  "pattern":{
+    "type":"radial",
+    "count":12,
+    "axis":"Z",
+    "center_mm":[0,0,0],
+    "angle_degrees":360
+  }
+}
+```
+
+Linear patterns use `step_mm`.
+
+### One-image visual verification
+
+`preview(mode="engineering")` renders Front/Back/Left/Right/Top/Bottom into a single contact sheet. Use it only after numeric dimension/topology/fit checks need visual confirmation.
+
 ## Install
 
 Requires Blender 4.2+ and Python 3.10+.
