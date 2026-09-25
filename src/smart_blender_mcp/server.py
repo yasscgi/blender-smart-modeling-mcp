@@ -289,6 +289,23 @@ def setup_engineering_cameras(
 
 
 @mcp.tool()
+def silhouette_fit(
+    part: dict,
+    coordinate_mode: str = "normalized",
+    part_id: str = "",
+    resolution: int = 64,
+) -> dict:
+    """Compare the actual mesh projection with Front/Side/Top plan silhouettes using low-token IoU scores."""
+    return call(
+        "silhouette_fit",
+        part=part,
+        coordinate_mode=coordinate_mode,
+        part_id=part_id or str(part.get("id", "")),
+        resolution=max(24, min(resolution, 160)),
+    )
+
+
+@mcp.tool()
 def mesh_validate(name: str = "", repair: bool = False) -> dict:
     """Return compact manifold/boundary/loose-geometry metrics; optionally repair safe issues."""
     return call("mesh_validate", name=name, repair=repair)
