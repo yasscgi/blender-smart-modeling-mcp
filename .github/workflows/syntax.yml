@@ -13,4 +13,11 @@ jobs:
         with:
           python-version: "3.11"
       - name: Compile Python sources
-        run: python -m py_compile addon.py src/smart_blender_mcp/server.py src/smart_blender_mcp/compact_server.py
+        run: python -m py_compile addon.py src/smart_blender_mcp/server.py src/smart_blender_mcp/compact_server.py src/smart_blender_mcp/blueprint.py
+      - name: Validate blueprint schema
+        env:
+          PYTHONPATH: src
+        run: >-
+          python -c "from smart_blender_mcp.blueprint import validate_blueprint_spec as v;
+          s={'units':'mm','coordinate_mode':'normalized','parts':[{'id':'P01','dimensions_mm':{'width':80,'depth':50,'height':120},'views':{'front':[[0,0],[1,0],[1,1],[0,1]],'side':[[0,0],[1,0],[1,1],[0,1]],'top':[[0,0],[1,0],[1,1],[0,1]]}}]};
+          r=v(s); assert r['ok'] and r['engineering_ready']"
