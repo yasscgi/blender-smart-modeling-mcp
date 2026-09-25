@@ -151,6 +151,122 @@ Pass a previous digest to `scene_state(changed_since=...)`. If nothing changed, 
 
 This avoids repeatedly paying tokens for identical scene descriptions.
 
+## V0.3 — Compact Advanced Modeling
+
+For the lowest token overhead, use the **compact server**:
+
+```bash
+uvx --from . blender-smart-mcp-compact
+```
+
+It exposes only four MCP tools:
+
+- `state` — compact scene delta/hash
+- `inspect` — topology, face-region or edge-region intelligence
+- `model` — mixed modeling plan in one transactional call
+- `preview` — visual checkpoint only when needed
+
+The full server remains available as `blender-smart-mcp` for debugging or direct access to individual tools.
+
+### One-call mixed modeling
+
+`model()` accepts a list of compact steps. Supported `do` values:
+
+- `create`
+- `object`
+- `mesh`
+- `topology`
+- `lathe`
+- `loft`
+- `sweep`
+- `curve`
+- `radial`
+- `validate`
+
+Example:
+
+```json
+{
+  "steps":[
+    {
+      "do":"create",
+      "kind":"cube",
+      "name":"Body",
+      "scale":[1.0,0.75,1.5]
+    },
+    {
+      "do":"mesh",
+      "name":"Body",
+      "ops":[
+        {
+          "op":"inset",
+          "selector":{"region":"top","band":0.12},
+          "thickness":0.08
+        },
+        {
+          "op":"extrude",
+          "selector":{"region":"top","band":0.12},
+          "distance":0.35
+        }
+      ]
+    },
+    {
+      "do":"topology",
+      "name":"Body",
+      "ops":[
+        {
+          "op":"bevel_edges",
+          "selector":{
+            "orientation":{"axis":"Z","min_dot":0.9}
+          },
+          "width":0.04,
+          "segments":3
+        }
+      ]
+    },
+    {
+      "do":"validate",
+      "name":"Body"
+    }
+  ],
+  "checkpoint":true,
+  "rollback_on_error":true
+}
+```
+
+By default only the final compact result is returned. Set `return_steps=true` only when debugging.
+
+### Edge loops and rings without ID dumps
+
+Edge selectors can choose a tiny seed and expand it locally:
+
+```json
+{
+  "nearest":[0.0,0.75,1.2],
+  "orientation":{"axis":"X","min_dot":0.6},
+  "expand":"ring"
+}
+```
+
+The same selector can be used by `edge_query` or topology operations. This avoids sending long edge-ID arrays.
+
+### Advanced topology
+
+V0.3 adds:
+
+- compact topology state: tris/quads/ngons, manifold state, poles and boundary loops
+- local edge bevel/support edges
+- edge subdivision/dissolve/collapse
+- semantic planar loop cuts
+- boundary-loop bridging
+- seed-to-ring and seed-to-loop expansion
+- profile sweep for rails, trims, frames and handles
+- radial arrays for repeated details
+
+### Transaction safety
+
+The compact `model` tool can place one Blender undo checkpoint for the entire plan. With `rollback_on_error=true`, a failed step attempts to restore the scene to the state before the batch.
+
 ## Install
 
 Requires Blender 4.2+ and Python 3.10+.
@@ -176,7 +292,7 @@ uvx --from . blender-smart-mcp
 {
   "mcpServers": {
     "smart-blender": {
-      "command": "blender-smart-mcp"
+      "command": "blender-smart-mcp-compact"
     }
   }
 }
