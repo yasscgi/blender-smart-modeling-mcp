@@ -30,7 +30,7 @@ The socket listener runs outside Blender's UI thread, while Blender API work is 
 
 ### Creation
 - `create_primitive`
-- `lathe_profile` — detailed rotational forms from a sparse profile
+- `lathe_profile` — detailed rotational forms from a sparse profile\n- `loft_sections` — complex non-rotational bodies from sparse cross-sections
 - `curve_tube` — cables, handles, ornaments and paths
 
 ### Object-level modeling
@@ -89,6 +89,24 @@ Selectors can be combined:
   ]
 }
 ```
+
+## Sparse loft example
+
+A non-circular product body can be represented by a few cross-sections instead of thousands of vertices:
+
+```json
+{
+  "name":"Housing",
+  "sections":[
+    {"z":0.0,"points":[[-1,-0.7],[1,-0.7],[1,0.7],[-1,0.7]]},
+    {"z":1.2,"points":[[-1.1,-0.8],[1.1,-0.8],[1.1,0.8],[-1.1,0.8]]},
+    {"z":2.4,"points":[[-0.75,-0.55],[0.75,-0.55],[0.75,0.55],[-0.75,0.55]]}
+  ],
+  "cap":true
+}
+```
+
+Blender generates the connecting topology locally.
 
 ## Low-token modeling example
 
