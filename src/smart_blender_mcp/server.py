@@ -5,6 +5,7 @@ import socket
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from .blueprint import validate_blueprint_spec
 
 mcp = FastMCP("Smart Blender Modeling")
 HOST, PORT = "127.0.0.1", 9877
@@ -242,6 +243,48 @@ def curve_tube(
         radius=radius,
         resolution=resolution,
         cyclic=cyclic,
+    )
+
+
+@mcp.tool()
+def blueprint_validate(spec: dict) -> dict:
+    """Validate a multi-part orthographic engineering manifest before modeling."""
+    return validate_blueprint_spec(spec)
+
+
+@mcp.tool()
+def reconstruct_blueprint(
+    spec: dict,
+    bevel_mm: float = 0.0,
+    cleanup: bool = True,
+    collection_name: str = "Blueprint_Reconstruction",
+) -> dict:
+    """Reconstruct all parts from front/side/top 2D silhouette plans.
+    Blender creates orthographic silhouette prisms and intersects them into a 3D visual hull."""
+    report = validate_blueprint_spec(spec)
+    if not report["ok"]:
+        return report
+    return call(
+        "reconstruct_blueprint",
+        spec=spec,
+        bevel_mm=bevel_mm,
+        cleanup=cleanup,
+        collection_name=collection_name,
+    )
+
+
+@mcp.tool()
+def setup_engineering_cameras(
+    dimensions_mm: dict,
+    center_mm: list[float] | None = None,
+    margin: float = 1.15,
+) -> dict:
+    """Create orthographic Front/Back/Left/Right/Top/Bottom cameras for engineering review."""
+    return call(
+        "setup_engineering_cameras",
+        dimensions_mm=dimensions_mm,
+        center_mm=center_mm or [0, 0, 0],
+        margin=margin,
     )
 
 
