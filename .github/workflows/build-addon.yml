@@ -1,0 +1,51 @@
+name: Build Blender Add-on
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify add-on syntax
+        run: python -m py_compile addon.py
+
+      - name: Build installable Blender ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist/smart_modeling_mcp
+          cp addon.py dist/smart_modeling_mcp/__init__.py
+          cat > dist/smart_modeling_mcp/README.txt <<'EOF'
+          Smart Modeling MCP v0.4.1
+
+          Blender side:
+          1. Blender > Edit > Preferences > Add-ons.
+          2. Install from Disk and choose Smart_Modeling_MCP_v0.4.1.zip.
+          3. Enable "Smart Modeling MCP".
+          4. 3D View > N panel > Smart MCP.
+          5. Press "Run Self Test".
+          6. Press "Start / Stop" to listen on 127.0.0.1:9877.
+
+          MCP server side:
+          Install the repository package with Python 3.10+:
+            pip install "git+https://github.com/yasscgi/blender-smart-modeling-mcp.git"
+
+          Recommended low-token MCP command:
+            blender-smart-mcp-compact
+
+          The server intentionally pins MCP SDK v1 (<2) in this release.
+          EOF
+          (cd dist && zip -r Smart_Modeling_MCP_v0.4.1.zip smart_modeling_mcp)
+
+      - name: Upload Blender add-on ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Smart_Modeling_MCP_v0.4.1
+          path: dist/Smart_Modeling_MCP_v0.4.1.zip
+          retention-days: 30
