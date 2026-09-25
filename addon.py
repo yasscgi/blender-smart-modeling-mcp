@@ -550,6 +550,51 @@ def op_lathe(p):
     return result(object=compact_obj(o), scene_h=scene_digest())
 
 
+def op_loft(p):
+    sections = p.get("sections", [])
+    if len(sections) < 2:
+        raise ValueError("loft_sections needs at least 2 sections")
+    point_count = len(sections[0].get("points", []))
+    if point_count < 3:
+        raise ValueError("Each loft section needs at least 3 points")
+    if any(len(s.get("points", [])) != point_count for s in sections):
+        raise ValueError("All loft sections must have the same point count")
+
+    verts = []
+    faces = []
+    for section in sections:
+        z = float(section["z"])
+        verts.extend((float(x), float(y), z) for x, y in section["points"])
+
+    rings = len(sections)
+    for r in range(rings - 1):
+        a0 = r * point_count
+        b0 = (r + 1) * point_count
+        for i in range(point_count):
+            j = (i + 1) % point_count
+            faces.append((a0 + i, a0 + j, b0 + j, b0 + i))
+
+    if p.get("cap", True):
+        faces.append(tuple(reversed(range(0, point_count))))
+        top0 = (rings - 1) * point_count
+        faces.append(tuple(top0 + i for i in range(point_count)))
+
+    me = bpy.data.meshes.new(p["name"] + "Mesh")
+    me.from_pydata(verts, [], faces)
+    me.update()
+    o = bpy.data.objects.new(p["name"], me)
+    bpy.context.collection.objects.link(o)
+
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+    return result(object=compact_obj(o), scene_h=scene_digest())
+
+
 def op_curve(p):
     cu = bpy.data.curves.new(p["name"] + "Curve", "CURVE")
     cu.dimensions = "3D"
@@ -623,7 +668,7 @@ def dispatch(a, p):
         return mesh_edit_batch(p)
     if a == "lathe_profile":
         return op_lathe(p)
-    if a == "curve_tube":
+    if a == "loft_sections":\n        return op_loft(p)\n    if a == "curve_tube":
         return op_curve(p)
     if a == "mesh_validate":
         return validate(p)
